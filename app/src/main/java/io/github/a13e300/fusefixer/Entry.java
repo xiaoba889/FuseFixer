@@ -1,6 +1,11 @@
 package io.github.a13e300.fusefixer;
 
+import android.util.Log;
+
 import de.robv.android.xposed.IXposedHookLoadPackage;
+import de.robv.android.xposed.XC_MethodHook;
+import de.robv.android.xposed.XposedBridge;
+import de.robv.android.xposed.XposedHelpers;
 import de.robv.android.xposed.callbacks.XC_LoadPackage;
 
 public class Entry implements IXposedHookLoadPackage {
@@ -10,5 +15,13 @@ public class Entry implements IXposedHookLoadPackage {
          || "com.google.android.providers.media.module".equals(lpparam.packageName)) {
             System.loadLibrary("fusefixer");
         }
+        var clz = XposedHelpers.findClass("com.android.providers.media.fuse.FuseDaemon", lpparam.classLoader);
+        XposedBridge.hookAllConstructors(clz, new XC_MethodHook() {
+            @Override
+            protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                Log.d("FuseFixer", "force enable uncached mode");
+                param.args[5] = true;
+            }
+        });
     }
 }

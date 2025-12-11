@@ -5,6 +5,8 @@
 #include <unicode/uchar.h>
 
 #include <link.h>
+#include <unistd.h>
+#include <sys/mman.h>
 #include <elf.h>
 
 #include "lsp_api.h"
@@ -68,6 +70,18 @@ bool my_is_bpf_backing_path(const std::string& path) {
     return r;
 }
 
+// hook strcasecmp to solve mount point passthrough
+// https://cs.android.com/android/platform/superproject/+/android-latest-release:packages/providers/MediaProvider/jni/node-inl.h;l=529-555;drc=b415bef4d9bdd8f506e89577dafdb9cda12bcd69
+// only NodeCompare uses strcasecmp
+// TODO: implement it without allocating memory
+int (*old_strcasecmp)(const char *s1, const char *s2);
+int my_strcasecmp(const char *s1, const char *s2) {
+    std::string new_s1 = s1, new_s2 = s2;
+    remove_default_ignorable_code_point(new_s1);
+    remove_default_ignorable_code_point(new_s2);
+    return old_strcasecmp(new_s1.c_str(), new_s2.c_str());
+}
+
 void on_library_loaded(const char *name, void *handle) {
     constexpr char kLibFuseJni[] = "libfuse_jni.so";
     LOGD("loaded: %s", name);
@@ -115,34 +129,68 @@ void on_library_loaded(const char *name, void *handle) {
 
         LOGD("so path %s off %zu", path.c_str(), off);
 
-        elf_parser::Elf elf{};
-        if (!elf.InitFromFile(path, base_addr, true, off)) {
-            LOGE("init elf failed");
-            return;
+        {
+            elf_parser::Elf elf{};
+            if (!elf.InitFromFile(path, base_addr, true, off)) {
+                LOGE("init elf failed");
+                return;
+            }
+
+            constexpr char is_app_accessible_path[] =
+                // "_ZN13mediaprovider4fuseL22is_app_accessible_pathEP4fuseRKNSt3__112basic_stringIcNS3_11char_traitsIcEENS3_9allocatorIcEEEEj"
+                "_ZN13mediaprovider4fuseL22is_app_accessible_pathEP4fuseRKNSt6__ndk112basic_stringIcNS3_11char_traitsIcEENS3_9allocatorIcEEEEj";
+            constexpr char is_package_owned_path[] = //"_ZL21is_package_owned_pathRKNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEES7_"
+                "_ZL21is_package_owned_pathRKNSt6__ndk112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEES7_";
+            constexpr char is_bpf_backing_path[] = "_ZL19is_bpf_backing_pathRKNSt6__ndk112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEE";
+
+            auto p = elf.getSymbAddress(is_app_accessible_path);
+            LOGD("is_app_accessible_path: %p", p);
+
+            auto r = hook_func(p, (void *) my_is_app_accessible_path,
+                               (void **) &old_is_app_accessible_path);
+            LOGD("hook is_app_accessible_path result %d", r);
+
+            p = elf.getSymbAddress(is_package_owned_path);
+            LOGD("is_package_owned_path: %p", p);
+            hook_func(p, (void *) my_is_package_owned_path, (void **) &old_is_package_owned_path);
+            LOGD("hook is_package_owned_path result %d", r);
+
+            p = elf.getSymbAddress(is_bpf_backing_path);
+            LOGD("is_bpf_backing_path: %p", p);
+            hook_func(p, (void *) my_is_bpf_backing_path, (void **) &old_is_bpf_backing_path);
+            LOGD("hook is_bpf_backing_path result %d", r);
         }
 
-        constexpr char is_app_accessible_path[] =
-            // "_ZN13mediaprovider4fuseL22is_app_accessible_pathEP4fuseRKNSt3__112basic_stringIcNS3_11char_traitsIcEENS3_9allocatorIcEEEEj"
-            "_ZN13mediaprovider4fuseL22is_app_accessible_pathEP4fuseRKNSt6__ndk112basic_stringIcNS3_11char_traitsIcEENS3_9allocatorIcEEEEj";
-        constexpr char is_package_owned_path[] = //"_ZL21is_package_owned_pathRKNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEES7_"
-                                                 "_ZL21is_package_owned_pathRKNSt6__ndk112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEES7_";
-        constexpr char is_bpf_backing_path[] = "_ZL19is_bpf_backing_pathRKNSt6__ndk112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEE";
+        {
+            elf_parser::Elf elf{};
+            if (!elf.InitFromMemory((void*) base_addr, true)) {
+                LOGE("init elf for dyn failed");
+                return;
+            }
 
-        auto p = elf.getSymbAddress(is_app_accessible_path);
-        LOGD("is_app_accessible_path: %p", p);
+            auto pgsz = getpagesize();
+            auto mask = pgsz - 1;
 
-        auto r = hook_func(p, (void *) my_is_app_accessible_path, (void **) &old_is_app_accessible_path);
-        LOGD("hook is_app_accessible_path result %d", r);
+#define PAGE_START(x) ((char*) ((x) & ~mask))
+#define PAGE_END(x) PAGE_START(x + mask)
 
-        p = elf.getSymbAddress(is_package_owned_path);
-        LOGD("is_package_owned_path: %p", p);
-        hook_func(p, (void *) my_is_package_owned_path, (void **) &old_is_package_owned_path);
-        LOGD("hook is_package_owned_path result %d", r);
+            auto addrs = elf.FindPltAddr("strcasecmp");
+            if (addrs.empty()) {
+                LOGE("no strcasecmp found");
+            }
+            for (auto a: addrs) {
+                LOGD("hooking strcasecmp %p", (void*)a);
+                if (mprotect(PAGE_START(a), pgsz, PROT_READ|PROT_WRITE) < 0) {
+                    PLOGE("mprotect");
+                } else {
+                    LOGD("hooked strcasecmp %p", (void*) a);
+                    old_strcasecmp = *(decltype(old_strcasecmp)*) a;
+                    *(void**)a = (void*) my_strcasecmp;
+                    __builtin___clear_cache(PAGE_START(a), PAGE_END(a));
+                }
+            }
+        }
 
-        p = elf.getSymbAddress(is_bpf_backing_path);
-        LOGD("is_bpf_backing_path: %p", p);
-        hook_func(p, (void *) my_is_bpf_backing_path, (void **) &old_is_bpf_backing_path);
-        LOGD("hook is_bpf_backing_path result %d", r);
     }
 }
 
