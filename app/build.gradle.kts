@@ -36,6 +36,12 @@ android {
             cmake {
                 arguments += "-DANDROID_STL=c++_static"
                 arguments += "-DCMAKE_CXX_STANDARD=20"
+                cppFlags(
+                    "-fno-rtti", "-fno-exceptions",
+                    "-ffunction-sections", "-fdata-sections",
+                    "-fasynchronous-unwind-tables", "-fno-unwind-tables",
+                    "-fvisibility=hidden", "-fvisibility-inlines-hidden",
+                )
             }
         }
         base.archivesName = "FuseFixer-${gitCommitCount}-${gitCommitHash}-${System.currentTimeMillis()}"
@@ -43,11 +49,17 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            externalNativeBuild {
+                cmake {
+                    cppFlags += arrayOf("-flto")
+                }
+            }
         }
     }
     compileOptions {
