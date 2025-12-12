@@ -60,6 +60,7 @@ android {
                     cppFlags += arrayOf("-flto")
                 }
             }
+            signingConfig = signingConfigs["debug"]
         }
     }
     compileOptions {
