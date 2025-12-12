@@ -137,13 +137,20 @@ void on_library_loaded(const char *name, void *handle) {
             }
 
             constexpr char is_app_accessible_path[] =
-                // "_ZN13mediaprovider4fuseL22is_app_accessible_pathEP4fuseRKNSt3__112basic_stringIcNS3_11char_traitsIcEENS3_9allocatorIcEEEEj"
                 "_ZN13mediaprovider4fuseL22is_app_accessible_pathEP4fuseRKNSt6__ndk112basic_stringIcNS3_11char_traitsIcEENS3_9allocatorIcEEEEj";
-            constexpr char is_package_owned_path[] = //"_ZL21is_package_owned_pathRKNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEES7_"
+            constexpr char is_app_accessible_path_alt[] =
+                "_ZN13mediaprovider4fuseL22is_app_accessible_pathEP4fuseRKNSt3__112basic_stringIcNS3_11char_traitsIcEENS3_9allocatorIcEEEEj";
+            constexpr char is_package_owned_path[] =
                 "_ZL21is_package_owned_pathRKNSt6__ndk112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEES7_";
-            constexpr char is_bpf_backing_path[] = "_ZL19is_bpf_backing_pathRKNSt6__ndk112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEE";
+            constexpr char is_package_owned_path_alt[] =
+                "_ZL21is_package_owned_pathRKNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEES7_";
+            constexpr char is_bpf_backing_path[] =
+                "_ZL19is_bpf_backing_pathRKNSt6__ndk112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEE";
+            constexpr char is_bpf_backing_path_alt[] =
+                "_ZL19is_bpf_backing_pathRKNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEE";
 
             auto p = elf.getSymbAddress(is_app_accessible_path);
+            if (!p) p = elf.getSymbAddress(is_app_accessible_path_alt);
             LOGD("is_app_accessible_path: %p", p);
 
             auto r = hook_func(p, (void *) my_is_app_accessible_path,
@@ -151,11 +158,13 @@ void on_library_loaded(const char *name, void *handle) {
             LOGD("hook is_app_accessible_path result %d", r);
 
             p = elf.getSymbAddress(is_package_owned_path);
+            if (!p) p = elf.getSymbAddress(is_package_owned_path_alt);
             LOGD("is_package_owned_path: %p", p);
             hook_func(p, (void *) my_is_package_owned_path, (void **) &old_is_package_owned_path);
             LOGD("hook is_package_owned_path result %d", r);
 
             p = elf.getSymbAddress(is_bpf_backing_path);
+            if (!p) p = elf.getSymbAddress(is_bpf_backing_path_alt);
             LOGD("is_bpf_backing_path: %p", p);
             hook_func(p, (void *) my_is_bpf_backing_path, (void **) &old_is_bpf_backing_path);
             LOGD("hook is_bpf_backing_path result %d", r);
