@@ -17,7 +17,6 @@ extern "C" {
 #ifdef NDEBUG
 #define LOGV(...)
 #define LOGD(...)
-#define debug(...)
 #else
 #define DEBUG 1
 #define LOGV(...) (__android_log_print(ANDROID_LOG_VERBOSE, TAG, __VA_ARGS__))

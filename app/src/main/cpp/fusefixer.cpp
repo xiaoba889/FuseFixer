@@ -86,6 +86,7 @@ void on_library_loaded(const char *name, void *handle) {
     constexpr char kLibFuseJni[] = "libfuse_jni.so";
     LOGD("loaded: %s", name);
     if (std::string(name).ends_with(kLibFuseJni)) {
+        LOGI("hooking libfuse_jni");
         uintptr_t base_addr = 0;
         auto callback = [&](dl_phdr_info& info) -> bool {
             if (!info.dlpi_name) return false;
@@ -155,19 +156,25 @@ void on_library_loaded(const char *name, void *handle) {
 
             auto r = hook_func(p, (void *) my_is_app_accessible_path,
                                (void **) &old_is_app_accessible_path);
-            LOGD("hook is_app_accessible_path result %d", r);
+            if (r != 0) {
+                LOGD("hook is_app_accessible_path failed: %d", r);
+            }
 
             p = elf.getSymbAddress(is_package_owned_path);
             if (!p) p = elf.getSymbAddress(is_package_owned_path_alt);
             LOGD("is_package_owned_path: %p", p);
-            hook_func(p, (void *) my_is_package_owned_path, (void **) &old_is_package_owned_path);
-            LOGD("hook is_package_owned_path result %d", r);
+            r = hook_func(p, (void *) my_is_package_owned_path, (void **) &old_is_package_owned_path);
+            if (r != 0) {
+                LOGE("hook is_package_owned_path failed: %d", r);
+            }
 
             p = elf.getSymbAddress(is_bpf_backing_path);
             if (!p) p = elf.getSymbAddress(is_bpf_backing_path_alt);
             LOGD("is_bpf_backing_path: %p", p);
-            hook_func(p, (void *) my_is_bpf_backing_path, (void **) &old_is_bpf_backing_path);
-            LOGD("hook is_bpf_backing_path result %d", r);
+            r = hook_func(p, (void *) my_is_bpf_backing_path, (void **) &old_is_bpf_backing_path);
+            if (r != 0) {
+                LOGE("hook is_bpf_backing_path failed: %d", r);
+            }
         }
 
         {
@@ -205,6 +212,7 @@ void on_library_loaded(const char *name, void *handle) {
 
 extern "C" [[gnu::visibility("default")]] [[gnu::used]]
 NativeOnModuleLoaded native_init(const NativeAPIEntries *entries) {
+    LOGI("Loaded");
     hook_func = entries->hook_func;
     return on_library_loaded;
 }
