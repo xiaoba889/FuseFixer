@@ -1,6 +1,23 @@
+import java.nio.charset.StandardCharsets
+
 plugins {
     alias(libs.plugins.android.application)
 }
+
+fun String.execute(): String =
+    Runtime.getRuntime().exec(split("\\s".toRegex()).toTypedArray())
+        .let { proc ->
+            proc.waitFor()
+            val result = proc.inputStream.use {
+                it.readBytes()
+            }.toString(StandardCharsets.UTF_8).trim()
+            proc.destroy()
+            result
+        }
+
+
+val gitCommitCount = "git rev-list HEAD --count".execute().toInt()
+val gitCommitHash = "git rev-parse --verify --short HEAD".execute()
 
 android {
     namespace = "io.github.a13e300.fusefixer"
@@ -21,6 +38,7 @@ android {
                 arguments += "-DCMAKE_CXX_STANDARD=20"
             }
         }
+        base.archivesName = "FuseFixer-${gitCommitCount}-${gitCommitHash}-${System.currentTimeMillis()}"
     }
 
     buildTypes {
