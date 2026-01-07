@@ -61,7 +61,7 @@ android {
         }
         base.archivesName = "FuseFixer-${gitCommitCount}-${gitCommitHash}-${System.currentTimeMillis()}"
     }
-    
+
     signingConfigs {
         if (keystoreProperties != null) {
             create("release") {

@@ -116,8 +116,11 @@ public class MainActivity extends Activity {
 
         var uname = Os.uname();
         mInfoTextView.append("Kernel: " + uname.release + "\n");
-        mInfoTextView.append("Android: " + Build.VERSION.RELEASE + "\n");
+        mInfoTextView.append("Release: " + Build.VERSION.RELEASE + "\n");
+        mInfoTextView.append("Device: " + Build.DEVICE + "\n");
         mInfoTextView.append("SDK: " + Build.VERSION.SDK_INT_FULL + "\n");
+        var sdcardFs = getBoolProp("external_storage.sdcardfs.enabled");
+        if (sdcardFs) mInfoTextView.append("sdcardfs=true\n");
 
         var fuseBpf = getBoolProp("ro.fuse.bpf.is_running");
         mInfoTextView.append("fuse bpf: " + (fuseBpf ? "supported" : "unsupported") + "\n");
@@ -253,7 +256,7 @@ public class MainActivity extends Activity {
     private void setupSelfCheck() {
         var pathEditText = new EditText(this);
         mRootView.addView(pathEditText);
-        var defaultPath = "/storage/emulated/" + (Process.myUid() / 100000) + "/Android/\\u200Ddata";
+        var defaultPath = "/storage/emulated/" + (Process.myUid() / 100000) + "/Android/\\u200ddata";
         pathEditText.setText(defaultPath);
 
         var gv = new GridLayout(this);
@@ -328,7 +331,8 @@ public class MainActivity extends Activity {
             outputTextView.append("List ");
             outputTextView.append(escape(p));
             if (result != null) {
-                outputTextView.append(" ->\n");
+                outputTextView.append(" -> " + result.length + " file(s)\n");
+
                 for (var r : result) {
                     outputTextView.append(r);
                     outputTextView.append("\n");
@@ -367,7 +371,7 @@ public class MainActivity extends Activity {
                 s = e = editable.length();
             }
 
-            editable.replace(s, e, "\\u200D");
+            editable.replace(s, e, "\\u200d");
         });
 
         clearButton.setOnClickListener(v -> {
