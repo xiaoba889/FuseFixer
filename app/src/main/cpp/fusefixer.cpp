@@ -8,84 +8,200 @@
 #include <unistd.h>
 #include <sys/mman.h>
 #include <elf.h>
-#include <sys/stat.h>
 
 #include "lsp_api.h"
 #include "elf_parser.hpp"
 #include "maps_scan.hpp"
 #include "logging.h"
 
-#undef LOGD
-#define LOGD(...) 0
+#include "fuse.h"
 
-bool remove_default_ignorable_code_point(std::string& str) {
+// https://cs.android.com/android/platform/superproject/main/+/main:bionic/libc/upstream-openbsd/lib/libc/string/strcasecmp.c;l=35-88;drc=b364683ea65e24070c77f1673a8c155665eb894e
+
+/*
+ * This array is designed for mapping upper and lower case letter
+ * together for a case independent comparison.  The mappings are
+ * based upon ascii character sequences.
+ */
+static const char charmap[] = {
+    '\000', '\001', '\002', '\003', '\004', '\005', '\006', '\007',
+    '\010', '\011', '\012', '\013', '\014', '\015', '\016', '\017',
+    '\020', '\021', '\022', '\023', '\024', '\025', '\026', '\027',
+    '\030', '\031', '\032', '\033', '\034', '\035', '\036', '\037',
+    '\040', '\041', '\042', '\043', '\044', '\045', '\046', '\047',
+    '\050', '\051', '\052', '\053', '\054', '\055', '\056', '\057',
+    '\060', '\061', '\062', '\063', '\064', '\065', '\066', '\067',
+    '\070', '\071', '\072', '\073', '\074', '\075', '\076', '\077',
+    '\100', '\141', '\142', '\143', '\144', '\145', '\146', '\147',
+    '\150', '\151', '\152', '\153', '\154', '\155', '\156', '\157',
+    '\160', '\161', '\162', '\163', '\164', '\165', '\166', '\167',
+    '\170', '\171', '\172', '\133', '\134', '\135', '\136', '\137',
+    '\140', '\141', '\142', '\143', '\144', '\145', '\146', '\147',
+    '\150', '\151', '\152', '\153', '\154', '\155', '\156', '\157',
+    '\160', '\161', '\162', '\163', '\164', '\165', '\166', '\167',
+    '\170', '\171', '\172', '\173', '\174', '\175', '\176', '\177',
+    '\200', '\201', '\202', '\203', '\204', '\205', '\206', '\207',
+    '\210', '\211', '\212', '\213', '\214', '\215', '\216', '\217',
+    '\220', '\221', '\222', '\223', '\224', '\225', '\226', '\227',
+    '\230', '\231', '\232', '\233', '\234', '\235', '\236', '\237',
+    '\240', '\241', '\242', '\243', '\244', '\245', '\246', '\247',
+    '\250', '\251', '\252', '\253', '\254', '\255', '\256', '\257',
+    '\260', '\261', '\262', '\263', '\264', '\265', '\266', '\267',
+    '\270', '\271', '\272', '\273', '\274', '\275', '\276', '\277',
+    '\300', '\301', '\302', '\303', '\304', '\305', '\306', '\307',
+    '\310', '\311', '\312', '\313', '\314', '\315', '\316', '\317',
+    '\320', '\321', '\322', '\323', '\324', '\325', '\326', '\327',
+    '\330', '\331', '\332', '\333', '\334', '\335', '\336', '\337',
+    '\340', '\341', '\342', '\343', '\344', '\345', '\346', '\347',
+    '\350', '\351', '\352', '\353', '\354', '\355', '\356', '\357',
+    '\360', '\361', '\362', '\363', '\364', '\365', '\366', '\367',
+    '\370', '\371', '\372', '\373', '\374', '\375', '\376', '\377',
+};
+
+std::string escape_string(std::string_view sv) {
+    std::string os;
+    char buf[8];
+    for (char i : sv) {
+        if (i >= 32 && i < 127) [[likely]] {
+            os += i;
+        } else {
+            snprintf(buf, sizeof(buf), "\\x%02x", i);
+            os += buf;
+        }
+    }
+    return os;
+}
+
+int svcasecmp_fix(std::string_view sv1, std::string_view sv2) {
+    const char *cm = charmap;
+    auto s1 = sv1.data(), s2 = sv2.data();
+    auto l1 = sv1.size(), l2 = sv2.size();
+    size_t i1 = 0, i2 = 0, j1 = 0, j2 = 0;
+
+    UChar32 ch;
+    while (i1 < l1 && j2 < l2) {
+        if (i1 == j1) {
+            do {
+                i1 = j1;
+                U8_NEXT(s1, j1, l1, ch);
+                // We can't do any thing if we occurred invalid utf-8 char.
+                // In this case, j will increment by 1, so just break
+                if (ch < 0) [[unlikely]] {
+                    LOGW("invalid char at %zu-%zu : %s", i1, j1, escape_string(sv1).c_str());
+                    break;
+                }
+            } while (j1 < l1 && u_hasBinaryProperty(ch, UCHAR_DEFAULT_IGNORABLE_CODE_POINT));
+        }
+
+        if (i2 == j2) {
+            do {
+                i2 = j2;
+                U8_NEXT(s2, j2, l2, ch);
+                if (ch < 0) [[unlikely]] {
+                    LOGW("invalid char at %zu-%zu : %s", i2, j2, escape_string(sv2).c_str());
+                    break;
+                }
+            } while (j2 < l2 && u_hasBinaryProperty(ch, UCHAR_DEFAULT_IGNORABLE_CODE_POINT));
+        }
+
+        if (cm[s1[i1]] != cm[s2[i2]]) {
+            break;
+        }
+        if (cm[s1[i1]] == '\0') {
+            return 0;
+        }
+        ++i1;
+        ++i2;
+    }
+
+    return ((u_char) cm[s1[i1]] - (u_char) cm[s2[i2]]);
+}
+
+int strcasecmp_fix(const char *s1, const char *s2) {
+    return svcasecmp_fix(std::string_view{s1, strlen(s1)}, std::string_view{s2, strlen(s2)});
+}
+
+bool has_default_ignorable_code_point(const std::string& str) {
+    auto buf = str.data();
+    auto len = str.size();
+    auto* s = reinterpret_cast<const uint8_t*>(buf);
+    size_t i = 0;
+    UChar32 ch;
+    while (i < len) {
+        U8_NEXT(s, i, len, ch);
+        if (ch >= 0 && !u_hasBinaryProperty(ch, UCHAR_DEFAULT_IGNORABLE_CODE_POINT)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void remove_default_ignorable_code_point(std::string& str) {
     auto buf = str.data();
     auto len = str.size();
     auto* s = reinterpret_cast<uint8_t*>(buf);
-    int32_t i = 0, j = 0, prev;
+    size_t i = 0, j = 0, prev;
     UChar32 ch;
     while (i < len) {
         prev = i;
         U8_NEXT(s, i, len, ch);
         if (ch < 0) {
-            LOGE("error occurred while processing str: i=%d len=%zu", i, len);
-            break;
-        }
-        if (!u_hasBinaryProperty(ch, UCHAR_DEFAULT_IGNORABLE_CODE_POINT)) {
+            LOGW("invalid char at %zu-%zu : %s", prev, i, escape_string(str).c_str());
+        } else if (!u_hasBinaryProperty(ch, UCHAR_DEFAULT_IGNORABLE_CODE_POINT)) {
             while (prev < i) {
                 buf[j++] = (char) s[prev++];
             }
         }
     }
     str.resize(j);
-    if (j != len) {
-        LOGD("removed something in str %s", str.c_str());
-        return true;
-    }
-    return false;
 }
 
 static HookFunType hook_func = nullptr;
 
 bool (*old_is_package_owned_path)(const std::string& path, const std::string& fuse_path);
 bool my_is_package_owned_path(const std::string& path, const std::string& fuse_path) {
-    std::string new_path = path;
-    remove_default_ignorable_code_point(new_path);
-    auto r = old_is_package_owned_path(new_path, fuse_path);
-    LOGD("is_package_owned_path: %s res=%d", path.c_str(), r);
-    return r;
+    if (has_default_ignorable_code_point(path)) [[unlikely]] {
+        std::string new_path{path};
+        remove_default_ignorable_code_point(new_path);
+        auto r = old_is_package_owned_path(new_path, fuse_path);
+        LOGD("fix is_package_owned_path: %s res=%d", escape_string(path).c_str(), r);
+        return r;
+    }
+    return old_is_package_owned_path(path, fuse_path);
 }
 
 bool (*old_is_app_accessible_path)(struct fuse* fuse, const std::string& path, uid_t uid);
 bool my_is_app_accessible_path(struct fuse* fuse, const std::string& path, uid_t uid) {
-    std::string new_path = path;
-    remove_default_ignorable_code_point(new_path);
-    auto r = old_is_app_accessible_path(fuse, new_path, uid);
-    LOGD("is_app_accessible_path: %s uid=%d res=%d", path.c_str(), uid, r);
-    return r;
+    if (has_default_ignorable_code_point(path)) [[unlikely]] {
+        std::string new_path{path};
+        remove_default_ignorable_code_point(new_path);
+        auto r = old_is_app_accessible_path(fuse, new_path, uid);
+        LOGD("fix is_app_accessible_path: %s uid=%d res=%d", escape_string(path).c_str(), uid, r);
+        return r;
+    }
+    return old_is_app_accessible_path(fuse, path, uid);;
 }
 
 // Magic is here?
 // https://cs.android.com/android/platform/superproject/main/+/main:packages/providers/MediaProvider/jni/FuseDaemon.cpp;l=699-701;drc=61197364367c9e404c7da6900658f1b16c42d0da
 bool (*old_is_bpf_backing_path)(const std::string& path);
 bool my_is_bpf_backing_path(const std::string& path) {
-    std::string new_path = path;
-    remove_default_ignorable_code_point(new_path);
-    auto r = old_is_bpf_backing_path(new_path);
-    LOGD("is_bpf_backing_path: %s res=%d", path.c_str(), r);
-    return r;
+    if (has_default_ignorable_code_point(path)) [[unlikely]] {
+        std::string new_path{path};
+        remove_default_ignorable_code_point(new_path);
+        auto r = old_is_bpf_backing_path(new_path);
+        LOGD("fix is_bpf_backing_path: %s res=%d", escape_string(path).c_str(), r);
+        return r;
+    }
+    return old_is_bpf_backing_path(path);
 }
 
 // hook strcasecmp to solve mount point passthrough
 // https://cs.android.com/android/platform/superproject/+/android-latest-release:packages/providers/MediaProvider/jni/node-inl.h;l=529-555;drc=b415bef4d9bdd8f506e89577dafdb9cda12bcd69
 // only NodeCompare uses strcasecmp
-// TODO: implement it without allocating memory
 int (*old_strcasecmp)(const char *s1, const char *s2);
 int my_strcasecmp(const char *s1, const char *s2) {
-    std::string new_s1 = s1, new_s2 = s2;
-    remove_default_ignorable_code_point(new_s1);
-    remove_default_ignorable_code_point(new_s2);
-    return old_strcasecmp(new_s1.c_str(), new_s2.c_str());
+    return strcasecmp_fix(s1, s2);
 }
 
 // https://cs.android.com/android/platform/superproject/main/+/main:packages/providers/MediaProvider/jni/FuseUtils.cpp;l=50-52;drc=61197364367c9e404c7da6900658f1b16c42d0da
@@ -93,11 +209,7 @@ int my_strcasecmp(const char *s1, const char *s2) {
 // https://cs.android.com/android/platform/superproject/main/+/main:system/libbase/strings.cpp;l=119;drc=61197364367c9e404c7da6900658f1b16c42d0da
 bool (*old_EqualsIgnoreCase)(std::string_view lhs, std::string_view rhs);
 bool my_EqualsIgnoreCase(std::string_view lhs, std::string_view rhs) {
-    std::string new_lhs{lhs};
-    if (remove_default_ignorable_code_point(new_lhs)) {
-        LOGI("EqualsIgnoreCase fixed %s", new_lhs.c_str());
-    }
-    return old_EqualsIgnoreCase(new_lhs, rhs);
+    return svcasecmp_fix(lhs, rhs) == 0;
 }
 
 int (*old_fuse_lowlevel_notify_inval_entry)(void *se, uint64_t parent,
@@ -121,65 +233,10 @@ int my_fuse_lowlevel_notify_inval_inode(void *se, uint64_t ino,
     } else {
         name = reinterpret_cast<std::string*>(ino);
     }
-    LOGI("notify_inval_inode: ino=0x%lx name=%s ret=%d", ino, name->c_str(), ret);
+    LOGI("notify_inval_inode: ino=0x%lx name=%s ret=%d", ino, escape_string(*name).c_str(), ret);
     return ret;
 }
 
-typedef uint64_t fuse_ino_t;
-
-struct fuse_req {
-    struct fuse_session *se;
-    uint64_t unique;
-};
-typedef struct fuse_req *fuse_req_t;
-
-struct fuse_entry_param {
-    /** Unique inode number
-     *
-     * In lookup, zero means negative entry (from version 2.5)
-     * Returning ENOENT also means negative entry, but by setting zero
-     * ino the kernel may cache negative entries for entry_timeout
-     * seconds.
-     */
-    fuse_ino_t ino;
-
-    /** Generation number for this entry.
-     *
-     * If the file system will be exported over NFS, the
-     * ino/generation pairs need to be unique over the file
-     * system's lifetime (rather than just the mount time). So if
-     * the file system reuses an inode after it has been deleted,
-     * it must assign a new, previously unused generation number
-     * to the inode at the same time.
-     *
-     */
-    uint64_t generation;
-
-    /** Inode attributes.
-     *
-     * Even if attr_timeout == 0, attr must be correct. For example,
-     * for open(), FUSE uses attr.st_size from lookup() to determine
-     * how many bytes to request. If this value is not correct,
-     * incorrect data will be returned.
-     */
-    struct stat attr;
-
-    /** Validity timeout (in seconds) for inode attributes. If
-        attributes only change as a result of requests that come
-        through the kernel, this should be set to a very large
-        value. */
-    double attr_timeout;
-
-    /** Validity timeout (in seconds) for the name. If directory
-        entries are changed/deleted only as a result of requests
-        that come through the kernel, this should be set to a very
-        large value. */
-    double entry_timeout;
-    uint64_t        backing_action;
-    uint64_t        backing_fd;
-    uint64_t        bpf_action;
-    uint64_t        bpf_fd;
-};
 
 std::string (*node_BuildPath_ptr)(void* node);
 
@@ -198,7 +255,7 @@ std::string inodePath(uint64_t ino) {
 
 void (*old_pf_lookup)(fuse_req_t req, uint64_t parent, const char* name);
 void my_pf_lookup(fuse_req_t req, uint64_t parent, const char* name) {
-    LOGI("lookup: req=%lu parent=%s name=%s", req->unique, inodePath(parent).c_str(), name);
+    LOGI("lookup: req=%lu parent=%s name=%s", req->unique, escape_string(inodePath(parent)).c_str(), escape_string(name).c_str());
     old_pf_lookup(req, parent, name);
 }
 
@@ -206,12 +263,18 @@ int (*old_fuse_reply_entry)(fuse_req_t req, const struct fuse_entry_param* e);
 int my_fuse_reply_entry(fuse_req_t req, const struct fuse_entry_param* e) {
     auto ret = old_fuse_reply_entry(req, e);
     LOGI("fuse_reply_entry: req=%lu ino=%s timeout=%.2le attr_timeout=%.2le ret=%d", req->unique,
-         inodePath(e->ino).c_str(), e->entry_timeout, e->attr_timeout, ret);
+         escape_string(inodePath(e->ino)).c_str(), e->entry_timeout, e->attr_timeout, ret);
     return ret;
 }
 
+#ifdef NDEBUG
+static constexpr bool kDebugFuse = false;
+#else
+static constexpr bool kDebugFuse = true;
+#endif
+
 void on_library_loaded(const char *name, void *handle) {
-    constexpr char kLibFuseJni[] = "libfuse_jni.so";
+    static constexpr char kLibFuseJni[] = "libfuse_jni.so";
     LOGD("loaded: %s", name);
     if (std::string(name).ends_with(kLibFuseJni)) {
         LOGI("hooking libfuse_jni");
@@ -278,8 +341,11 @@ void on_library_loaded(const char *name, void *handle) {
             constexpr char is_bpf_backing_path_alt[] =
                 "_ZL19is_bpf_backing_pathRKNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEE";
 
-            node_BuildPath_ptr = reinterpret_cast<decltype(node_BuildPath_ptr)>(elf.getSymbAddress("_ZNK13mediaprovider4fuse4node9BuildPathEv"));
-            LOGI("BuildPath: %p", node_BuildPath_ptr);
+            if constexpr (kDebugFuse) {
+                node_BuildPath_ptr = reinterpret_cast<decltype(node_BuildPath_ptr)>(elf.getSymbAddress(
+                    "_ZNK13mediaprovider4fuse4node9BuildPathEv"));
+                LOGI("BuildPath: %p", node_BuildPath_ptr);
+            }
 
             auto p = elf.getSymbAddress(is_app_accessible_path);
             if (!p) p = elf.getSymbAddress(is_app_accessible_path_alt);
@@ -307,13 +373,15 @@ void on_library_loaded(const char *name, void *handle) {
                 LOGE("hook is_bpf_backing_path failed: %d", r);
             }
 
-            p = elf.getSymbAddress("_ZN13mediaprovider4fuseL9pf_lookupEP8fuse_reqmPKc");
-            LOGI("pf_lookup: %p", p);
-            r = hook_func(p, (void *) my_pf_lookup, (void **) &old_pf_lookup);
-            if (r != 0) {
-                LOGE("hook is_bpf_backing_path failed: %d", r);
-            } else {
-                LOGI("hook pf_lookup success");
+            if constexpr (kDebugFuse) {
+                p = elf.getSymbAddress("_ZN13mediaprovider4fuseL9pf_lookupEP8fuse_reqmPKc");
+                LOGI("pf_lookup: %p", p);
+                r = hook_func(p, (void *) my_pf_lookup, (void **) &old_pf_lookup);
+                if (r != 0) {
+                    LOGE("hook is_bpf_backing_path failed: %d", r);
+                } else {
+                    LOGI("hook pf_lookup success");
+                }
             }
         }
 
@@ -336,26 +404,32 @@ void on_library_loaded(const char *name, void *handle) {
                     LOGE("no %s found", sym);
                 }
                 for (auto a: addrs) {
-                    LOGI("hooking %s %p", sym, (void*)a);
+                    LOGD("hooking %s %p", sym, (void*)a);
                     if (mprotect(PAGE_START(a), pgsz, PROT_READ|PROT_WRITE) < 0) {
                         PLOGE("mprotect");
                     } else {
-                        LOGI("hooked %s %p", sym, (void*) a);
+                        LOGD("hooked %s %p", sym, (void*) a);
                         *old = *(void**) a;
                         *(void**)a = hook;
                         __builtin___clear_cache(PAGE_START(a), PAGE_END(a));
                     }
                 }
             };
+
             do_hook_plt("strcasecmp", (void*) my_strcasecmp, (void**) &old_strcasecmp);
-            /*do_hook_plt("_ZN7android4base16EqualsIgnoreCaseENSt6__ndk117basic_string_viewIcNS1_11char_traitsIcEEEES5_",
-                        (void*) my_EqualsIgnoreCase, (void**) old_EqualsIgnoreCase);*/
-            do_hook_plt("fuse_lowlevel_notify_inval_entry",
-                        (void*) my_fuse_lowlevel_notify_inval_entry, (void**) &old_fuse_lowlevel_notify_inval_entry);
-            do_hook_plt("fuse_lowlevel_notify_inval_inode",
-                        (void*) my_fuse_lowlevel_notify_inval_inode, (void**) &old_fuse_lowlevel_notify_inval_inode);
-            do_hook_plt("fuse_reply_entry",
-                        (void*) my_fuse_reply_entry, (void**) &old_fuse_reply_entry);
+            do_hook_plt("_ZN7android4base16EqualsIgnoreCaseENSt6__ndk117basic_string_viewIcNS1_11char_traitsIcEEEES5_",
+                        (void*) my_EqualsIgnoreCase, (void**) &old_EqualsIgnoreCase);
+
+            if constexpr (kDebugFuse) {
+                do_hook_plt("fuse_lowlevel_notify_inval_entry",
+                            (void *) my_fuse_lowlevel_notify_inval_entry,
+                            (void **) &old_fuse_lowlevel_notify_inval_entry);
+                do_hook_plt("fuse_lowlevel_notify_inval_inode",
+                            (void *) my_fuse_lowlevel_notify_inval_inode,
+                            (void **) &old_fuse_lowlevel_notify_inval_inode);
+                do_hook_plt("fuse_reply_entry",
+                            (void *) my_fuse_reply_entry, (void **) &old_fuse_reply_entry);
+            }
         }
 
     }
