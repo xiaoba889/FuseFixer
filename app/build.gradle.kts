@@ -47,6 +47,7 @@ android {
                     "-fasynchronous-unwind-tables", "-fno-unwind-tables",
                     "-fvisibility=hidden", "-fvisibility-inlines-hidden",
                 )
+                abiFilters("arm64-v8a", "armeabi-v7a")
             }
         }
         base.archivesName = "FuseFixer-${gitCommitCount}-${gitCommitHash}-${System.currentTimeMillis()}"
@@ -62,7 +63,11 @@ android {
             )
             externalNativeBuild {
                 cmake {
-                    cppFlags += arrayOf("-flto")
+                    cppFlags += arrayOf("-flto", "-O3")
+                    arguments(
+                        "-DCMAKE_CXX_FLAGS_RELEASE=",
+                        "-DCMAKE_C_FLAGS_RELEASE=",
+                    )
                 }
             }
             signingConfig = signingConfigs["debug"]
