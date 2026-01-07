@@ -1,9 +1,13 @@
 [versions]
 agp = "8.13.1"
 xposed = "82"
+core = "1.17.0"
+appcompat = "1.7.1"
 
 [libraries]
 xposed-api = { module = "de.robv.android.xposed:api", version.ref = "xposed" }
+androidx-core = { group = "androidx.core", name = "core", version.ref = "core" }
+androidx-appcompat = { group = "androidx.appcompat", name = "appcompat", version.ref = "appcompat" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

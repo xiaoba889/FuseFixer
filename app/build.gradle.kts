@@ -25,6 +25,10 @@ android {
         version = release(36)
     }
 
+    buildFeatures {
+        buildConfig = true
+    }
+
     defaultConfig {
         applicationId = "io.github.a13e300.fusefixer"
         minSdk = 31
@@ -77,4 +81,6 @@ android {
 
 dependencies {
     compileOnly(libs.xposed.api)
+    implementation(libs.androidx.core)
+    implementation(libs.androidx.appcompat)
 }
