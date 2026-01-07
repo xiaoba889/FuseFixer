@@ -13,6 +13,8 @@ import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.app.PendingIntent;
 import android.content.BroadcastReceiver;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
@@ -292,8 +294,13 @@ public class MainActivity extends Activity {
         resetButton.setText("Reset");
         gv.addView(resetButton);
 
+        var copyAllButton = new Button(this);
+        copyAllButton.setText("Copy All");
+        gv.addView(copyAllButton);
+
         var outputTextView = new TextView(this);
         mRootView.addView(outputTextView);
+        outputTextView.setTextIsSelectable(true);
 
         statButton.setOnClickListener(v -> {
             var p = unescape(pathEditText.getText().toString());
@@ -380,6 +387,18 @@ public class MainActivity extends Activity {
 
         resetButton.setOnClickListener(v -> {
             pathEditText.setText(defaultPath);
+        });
+
+        copyAllButton.setOnClickListener(v -> {
+            var cm = getSystemService(ClipboardManager.class);
+            var texts = new StringBuilder();
+            texts.append("Info:\n");
+            texts.append(mInfoTextView.getText());
+            texts.append("\nStatus:\n");
+            texts.append(mInjectStatusTextView.getText());
+            texts.append("\nTest:\n");
+            texts.append(outputTextView.getText());
+            cm.setPrimaryClip(ClipData.newPlainText("", texts));
         });
     }
 
