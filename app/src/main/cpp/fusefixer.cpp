@@ -14,7 +14,10 @@
 #include "maps_scan.hpp"
 #include "logging.h"
 
-void remove_default_ignorable_code_point(std::string& str) {
+#undef LOGD
+#define LOGD(...) 0
+
+bool remove_default_ignorable_code_point(std::string& str) {
     auto buf = str.data();
     auto len = str.size();
     auto* s = reinterpret_cast<uint8_t*>(buf);
@@ -36,7 +39,9 @@ void remove_default_ignorable_code_point(std::string& str) {
     str.resize(j);
     if (j != len) {
         LOGD("removed something in str %s", str.c_str());
+        return true;
     }
+    return false;
 }
 
 static HookFunType hook_func = nullptr;
@@ -80,6 +85,18 @@ int my_strcasecmp(const char *s1, const char *s2) {
     remove_default_ignorable_code_point(new_s1);
     remove_default_ignorable_code_point(new_s2);
     return old_strcasecmp(new_s1.c_str(), new_s2.c_str());
+}
+
+// https://cs.android.com/android/platform/superproject/main/+/main:packages/providers/MediaProvider/jni/FuseUtils.cpp;l=50-52;drc=61197364367c9e404c7da6900658f1b16c42d0da
+// Fix containsMount
+// https://cs.android.com/android/platform/superproject/main/+/main:system/libbase/strings.cpp;l=119;drc=61197364367c9e404c7da6900658f1b16c42d0da
+bool (*old_EqualsIgnoreCase)(std::string_view lhs, std::string_view rhs);
+bool my_EqualsIgnoreCase(std::string_view lhs, std::string_view rhs) {
+    std::string new_lhs{lhs};
+    if (remove_default_ignorable_code_point(new_lhs)) {
+        LOGI("EqualsIgnoreCase fixed %s", new_lhs.c_str());
+    }
+    return old_EqualsIgnoreCase(new_lhs, rhs);
 }
 
 void on_library_loaded(const char *name, void *handle) {
@@ -202,6 +219,22 @@ void on_library_loaded(const char *name, void *handle) {
                     LOGD("hooked strcasecmp %p", (void*) a);
                     old_strcasecmp = *(decltype(old_strcasecmp)*) a;
                     *(void**)a = (void*) my_strcasecmp;
+                    __builtin___clear_cache(PAGE_START(a), PAGE_END(a));
+                }
+            }
+
+            addrs = elf.FindPltAddr("_ZN7android4base16EqualsIgnoreCaseENSt6__ndk117basic_string_viewIcNS1_11char_traitsIcEEEES5_");
+            if (addrs.empty()) {
+                LOGE("no EqualsIgnoreCase found");
+            }
+            for (auto a: addrs) {
+                LOGD("hooking EqualsIgnoreCase %p", (void*)a);
+                if (mprotect(PAGE_START(a), pgsz, PROT_READ|PROT_WRITE) < 0) {
+                    PLOGE("mprotect");
+                } else {
+                    LOGD("hooked EqualsIgnoreCase %p", (void*) a);
+                    old_EqualsIgnoreCase = *(decltype(old_EqualsIgnoreCase)*) a;
+                    *(void**)a = (void*) my_EqualsIgnoreCase;
                     __builtin___clear_cache(PAGE_START(a), PAGE_END(a));
                 }
             }
