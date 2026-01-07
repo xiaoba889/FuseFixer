@@ -8,6 +8,7 @@
 #include <unistd.h>
 #include <sys/mman.h>
 #include <elf.h>
+#include <sys/stat.h>
 
 #include "lsp_api.h"
 #include "elf_parser.hpp"
@@ -99,6 +100,116 @@ bool my_EqualsIgnoreCase(std::string_view lhs, std::string_view rhs) {
     return old_EqualsIgnoreCase(new_lhs, rhs);
 }
 
+int (*old_fuse_lowlevel_notify_inval_entry)(void *se, uint64_t parent,
+                                     const char *name, size_t namelen);
+int my_fuse_lowlevel_notify_inval_entry(void *se, uint64_t parent,
+                                     const char *name, size_t namelen) {
+    auto ret = old_fuse_lowlevel_notify_inval_entry(se, parent, name, namelen);
+    LOGI("notify_inval_entry: ino=0x%lx name=%s ret=%d", parent, name, ret);
+    return ret;
+}
+
+int (*old_fuse_lowlevel_notify_inval_inode)(void *se, uint64_t ino,
+                                     off_t off, off_t len);
+int my_fuse_lowlevel_notify_inval_inode(void *se, uint64_t ino,
+                                     off_t off, off_t len) {
+    auto ret = old_fuse_lowlevel_notify_inval_inode(se, ino, off, len);
+    std::string* name;
+    if (ino == 1) {
+        static std::string ROOT_NAME = "(ROOT)";
+        name = &ROOT_NAME;
+    } else {
+        name = reinterpret_cast<std::string*>(ino);
+    }
+    LOGI("notify_inval_inode: ino=0x%lx name=%s ret=%d", ino, name->c_str(), ret);
+    return ret;
+}
+
+typedef uint64_t fuse_ino_t;
+
+struct fuse_req {
+    struct fuse_session *se;
+    uint64_t unique;
+};
+typedef struct fuse_req *fuse_req_t;
+
+struct fuse_entry_param {
+    /** Unique inode number
+     *
+     * In lookup, zero means negative entry (from version 2.5)
+     * Returning ENOENT also means negative entry, but by setting zero
+     * ino the kernel may cache negative entries for entry_timeout
+     * seconds.
+     */
+    fuse_ino_t ino;
+
+    /** Generation number for this entry.
+     *
+     * If the file system will be exported over NFS, the
+     * ino/generation pairs need to be unique over the file
+     * system's lifetime (rather than just the mount time). So if
+     * the file system reuses an inode after it has been deleted,
+     * it must assign a new, previously unused generation number
+     * to the inode at the same time.
+     *
+     */
+    uint64_t generation;
+
+    /** Inode attributes.
+     *
+     * Even if attr_timeout == 0, attr must be correct. For example,
+     * for open(), FUSE uses attr.st_size from lookup() to determine
+     * how many bytes to request. If this value is not correct,
+     * incorrect data will be returned.
+     */
+    struct stat attr;
+
+    /** Validity timeout (in seconds) for inode attributes. If
+        attributes only change as a result of requests that come
+        through the kernel, this should be set to a very large
+        value. */
+    double attr_timeout;
+
+    /** Validity timeout (in seconds) for the name. If directory
+        entries are changed/deleted only as a result of requests
+        that come through the kernel, this should be set to a very
+        large value. */
+    double entry_timeout;
+    uint64_t        backing_action;
+    uint64_t        backing_fd;
+    uint64_t        bpf_action;
+    uint64_t        bpf_fd;
+};
+
+std::string (*node_BuildPath_ptr)(void* node);
+
+std::string inodePath(uint64_t ino) {
+    if (ino == 1) [[unlikely]] {
+        return "(ROOT)";
+    }
+    char buf[64];
+    snprintf(buf, sizeof(buf), "(%p)", ino);
+    if (node_BuildPath_ptr) [[likely]] {
+        return buf + node_BuildPath_ptr(reinterpret_cast<void*>(ino));
+    } else {
+        return buf;
+    }
+}
+
+void (*old_pf_lookup)(fuse_req_t req, uint64_t parent, const char* name);
+void my_pf_lookup(fuse_req_t req, uint64_t parent, const char* name) {
+    LOGI("lookup: req=%lu parent=%s name=%s", req->unique, inodePath(parent).c_str(), name);
+    old_pf_lookup(req, parent, name);
+}
+
+int (*old_fuse_reply_entry)(fuse_req_t req, const struct fuse_entry_param* e);
+int my_fuse_reply_entry(fuse_req_t req, const struct fuse_entry_param* e) {
+    auto ret = old_fuse_reply_entry(req, e);
+    LOGI("fuse_reply_entry: req=%lu ino=%s timeout=%.2le attr_timeout=%.2le ret=%d", req->unique,
+         inodePath(e->ino).c_str(), e->entry_timeout, e->attr_timeout, ret);
+    return ret;
+}
+
 void on_library_loaded(const char *name, void *handle) {
     constexpr char kLibFuseJni[] = "libfuse_jni.so";
     LOGD("loaded: %s", name);
@@ -167,6 +278,9 @@ void on_library_loaded(const char *name, void *handle) {
             constexpr char is_bpf_backing_path_alt[] =
                 "_ZL19is_bpf_backing_pathRKNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEE";
 
+            node_BuildPath_ptr = reinterpret_cast<decltype(node_BuildPath_ptr)>(elf.getSymbAddress("_ZNK13mediaprovider4fuse4node9BuildPathEv"));
+            LOGI("BuildPath: %p", node_BuildPath_ptr);
+
             auto p = elf.getSymbAddress(is_app_accessible_path);
             if (!p) p = elf.getSymbAddress(is_app_accessible_path_alt);
             LOGD("is_app_accessible_path: %p", p);
@@ -192,6 +306,15 @@ void on_library_loaded(const char *name, void *handle) {
             if (r != 0) {
                 LOGE("hook is_bpf_backing_path failed: %d", r);
             }
+
+            p = elf.getSymbAddress("_ZN13mediaprovider4fuseL9pf_lookupEP8fuse_reqmPKc");
+            LOGI("pf_lookup: %p", p);
+            r = hook_func(p, (void *) my_pf_lookup, (void **) &old_pf_lookup);
+            if (r != 0) {
+                LOGE("hook is_bpf_backing_path failed: %d", r);
+            } else {
+                LOGI("hook pf_lookup success");
+            }
         }
 
         {
@@ -207,37 +330,32 @@ void on_library_loaded(const char *name, void *handle) {
 #define PAGE_START(x) ((char*) ((x) & ~mask))
 #define PAGE_END(x) PAGE_START(x + mask)
 
-            auto addrs = elf.FindPltAddr("strcasecmp");
-            if (addrs.empty()) {
-                LOGE("no strcasecmp found");
-            }
-            for (auto a: addrs) {
-                LOGD("hooking strcasecmp %p", (void*)a);
-                if (mprotect(PAGE_START(a), pgsz, PROT_READ|PROT_WRITE) < 0) {
-                    PLOGE("mprotect");
-                } else {
-                    LOGD("hooked strcasecmp %p", (void*) a);
-                    old_strcasecmp = *(decltype(old_strcasecmp)*) a;
-                    *(void**)a = (void*) my_strcasecmp;
-                    __builtin___clear_cache(PAGE_START(a), PAGE_END(a));
+            auto do_hook_plt = [&](const char* sym, void* hook, void** old) {
+                auto addrs = elf.FindPltAddr(sym);
+                if (addrs.empty()) {
+                    LOGE("no %s found", sym);
                 }
-            }
-
-            addrs = elf.FindPltAddr("_ZN7android4base16EqualsIgnoreCaseENSt6__ndk117basic_string_viewIcNS1_11char_traitsIcEEEES5_");
-            if (addrs.empty()) {
-                LOGE("no EqualsIgnoreCase found");
-            }
-            for (auto a: addrs) {
-                LOGD("hooking EqualsIgnoreCase %p", (void*)a);
-                if (mprotect(PAGE_START(a), pgsz, PROT_READ|PROT_WRITE) < 0) {
-                    PLOGE("mprotect");
-                } else {
-                    LOGD("hooked EqualsIgnoreCase %p", (void*) a);
-                    old_EqualsIgnoreCase = *(decltype(old_EqualsIgnoreCase)*) a;
-                    *(void**)a = (void*) my_EqualsIgnoreCase;
-                    __builtin___clear_cache(PAGE_START(a), PAGE_END(a));
+                for (auto a: addrs) {
+                    LOGI("hooking %s %p", sym, (void*)a);
+                    if (mprotect(PAGE_START(a), pgsz, PROT_READ|PROT_WRITE) < 0) {
+                        PLOGE("mprotect");
+                    } else {
+                        LOGI("hooked %s %p", sym, (void*) a);
+                        *old = *(void**) a;
+                        *(void**)a = hook;
+                        __builtin___clear_cache(PAGE_START(a), PAGE_END(a));
+                    }
                 }
-            }
+            };
+            do_hook_plt("strcasecmp", (void*) my_strcasecmp, (void**) &old_strcasecmp);
+            /*do_hook_plt("_ZN7android4base16EqualsIgnoreCaseENSt6__ndk117basic_string_viewIcNS1_11char_traitsIcEEEES5_",
+                        (void*) my_EqualsIgnoreCase, (void**) old_EqualsIgnoreCase);*/
+            do_hook_plt("fuse_lowlevel_notify_inval_entry",
+                        (void*) my_fuse_lowlevel_notify_inval_entry, (void**) &old_fuse_lowlevel_notify_inval_entry);
+            do_hook_plt("fuse_lowlevel_notify_inval_inode",
+                        (void*) my_fuse_lowlevel_notify_inval_inode, (void**) &old_fuse_lowlevel_notify_inval_inode);
+            do_hook_plt("fuse_reply_entry",
+                        (void*) my_fuse_reply_entry, (void**) &old_fuse_reply_entry);
         }
 
     }
