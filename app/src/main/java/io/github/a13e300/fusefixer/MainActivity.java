@@ -18,9 +18,15 @@ import android.content.IntentFilter;
 import android.os.Binder;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Process;
+import android.system.ErrnoException;
 import android.system.Os;
+import android.system.OsConstants;
 import android.util.Log;
 import android.view.View;
+import android.widget.Button;
+import android.widget.EditText;
+import android.widget.GridLayout;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -34,8 +40,11 @@ import androidx.core.view.WindowInsetsCompat;
 
 import org.jspecify.annotations.NonNull;
 
+import java.io.File;
 import java.lang.ref.ReferenceQueue;
 import java.lang.ref.WeakReference;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class MainActivity extends AppCompatActivity {
 
@@ -85,7 +94,7 @@ public class MainActivity extends AppCompatActivity {
         scrollRoot.addView(mRootView);
         mRootView.setOrientation(LinearLayout.VERTICAL);
         setContentView(scrollRoot);
-        ViewCompat.setOnApplyWindowInsetsListener(mRootView, new OnApplyWindowInsetsListener() {
+        ViewCompat.setOnApplyWindowInsetsListener(scrollRoot, new OnApplyWindowInsetsListener() {
             @Override
             public @NonNull WindowInsetsCompat onApplyWindowInsets(@NonNull View v, @NonNull WindowInsetsCompat insets) {
                 var systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars());
@@ -96,6 +105,7 @@ public class MainActivity extends AppCompatActivity {
 
         setupInfo();
         setupStatus();
+        setupSelfCheck();
     }
 
     private void setupInfo() {
@@ -209,6 +219,164 @@ public class MainActivity extends AppCompatActivity {
         } else {
             mInjectStatusTextView.setText("Module status: hooked " + mInjectedPkg + " pid=" + mInjectedPid + "\n");
         }
+    }
+
+    private static Pattern UNICODE_PATTERN = Pattern.compile("\\\\u([0-9a-fA-F]{4})");
+
+    private static String unescape(String s) {
+        if (s == null) return null;
+        Matcher m = UNICODE_PATTERN.matcher(s);
+        var sb = new StringBuffer();
+        while (m.find()) {
+            String group = m.group(1);
+            char c = (char) Integer.parseInt(group, 16);
+            m.appendReplacement(sb, Character.toString(c));
+        }
+        m.appendTail(sb);
+        return sb.toString();
+    }
+
+    private static String escape(String s) {
+        var sb = new StringBuilder();
+        for (var i = 0; i < s.length(); i++) {
+            if (s.charAt(i) < 32 || s.charAt(i) > 126) {
+                sb.append("\\u");
+                sb.append(String.format("%04x", (int) s.charAt(i)));
+            } else {
+                sb.append(s.charAt(i));
+            }
+        }
+        return sb.toString();
+    }
+
+    @SuppressLint("SetTextI18n")
+    private void setupSelfCheck() {
+        var pathEditText = new EditText(this);
+        mRootView.addView(pathEditText);
+        var defaultPath = "/storage/emulated/" + (Process.myUid() / 100000) + "/Android/\\u200Ddata";
+        pathEditText.setText(defaultPath);
+
+        var gv = new GridLayout(this);
+        mRootView.addView(gv);
+        gv.setRowCount(2);
+        gv.setColumnCount(4);
+
+        var statButton = new Button(this);
+        statButton.setText("Stat");
+        gv.addView(statButton);
+
+        var accessButton = new Button(this);
+        accessButton.setText("Access");
+        gv.addView(accessButton);
+
+        var listButton = new Button(this);
+        listButton.setText("List");
+        gv.addView(listButton);
+
+        var openButton = new Button(this);
+        openButton.setText("Open");
+        gv.addView(openButton);
+
+        var insertZwjButton = new Button(this);
+        insertZwjButton.setText("Insert ZWJ");
+        gv.addView(insertZwjButton);
+
+        var clearButton = new Button(this);
+        clearButton.setText("Clear");
+        gv.addView(clearButton);
+
+        var resetButton = new Button(this);
+        resetButton.setText("Reset");
+        gv.addView(resetButton);
+
+        var outputTextView = new TextView(this);
+        mRootView.addView(outputTextView);
+
+        statButton.setOnClickListener(v -> {
+            var p = unescape(pathEditText.getText().toString());
+            var result = "OK";
+            try {
+                Os.stat(p);
+            } catch (ErrnoException e) {
+                result = OsConstants.errnoName(e.errno);
+            }
+            outputTextView.append("Stat ");
+            outputTextView.append(escape(p));
+            outputTextView.append(" -> ");
+            outputTextView.append(result);
+            outputTextView.append("\n");
+        });
+
+        accessButton.setOnClickListener(v -> {
+            var p = unescape(pathEditText.getText().toString());
+            var result = "OK";
+            try {
+                Os.access(p, OsConstants.F_OK);
+            } catch (ErrnoException e) {
+                result = OsConstants.errnoName(e.errno);
+            }
+            outputTextView.append("Access ");
+            outputTextView.append(escape(p));
+            outputTextView.append(" -> ");
+            outputTextView.append(result);
+            outputTextView.append("\n");
+        });
+
+        listButton.setOnClickListener(v -> {
+            var p = unescape(pathEditText.getText().toString());
+            var result = new File(p).list();
+            outputTextView.append("List ");
+            outputTextView.append(escape(p));
+            if (result != null) {
+                outputTextView.append(" ->\n");
+                for (var r : result) {
+                    outputTextView.append(r);
+                    outputTextView.append("\n");
+                }
+            } else {
+                outputTextView.append(" -> None\n");
+            }
+        });
+
+        openButton.setOnClickListener(v -> {
+            var p = unescape(pathEditText.getText().toString());
+            String result = "OK";
+            try {
+                var fd = Os.open(p, OsConstants.O_RDONLY | OsConstants.O_CLOEXEC, 0);
+                try {
+                    Os.close(fd);
+                } catch (Throwable t) {
+                    Log.e(TAG, "could not close??", t);
+                }
+            } catch (ErrnoException e) {
+                result = OsConstants.errnoName(e.errno);
+            }
+            outputTextView.append("Open ");
+            outputTextView.append(escape(p));
+            outputTextView.append(" -> ");
+            outputTextView.append(result);
+            outputTextView.append("\n");
+        });
+
+        insertZwjButton.setOnClickListener(v -> {
+            var editable = pathEditText.getEditableText();
+            var s = pathEditText.getSelectionStart();
+            var e = pathEditText.getSelectionEnd();
+            var focused = pathEditText.isFocused();
+            if (!focused) {
+                s = e = editable.length();
+            }
+
+            editable.replace(s, e, "\\u200D");
+        });
+
+        clearButton.setOnClickListener(v -> {
+            outputTextView.setText("");
+        });
+
+        resetButton.setOnClickListener(v -> {
+            pathEditText.setText(defaultPath);
+        });
     }
 
     @Override
