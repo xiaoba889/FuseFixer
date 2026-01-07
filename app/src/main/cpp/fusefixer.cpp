@@ -72,6 +72,8 @@ std::string escape_string(std::string_view sv) {
     return os;
 }
 
+void remove_default_ignorable_code_point(std::string& str);
+
 int svcasecmp_fix(std::string_view sv1, std::string_view sv2) {
     const char *cm = charmap;
     auto s1 = sv1.data(), s2 = sv2.data();
@@ -83,6 +85,7 @@ int svcasecmp_fix(std::string_view sv1, std::string_view sv2) {
         if (i1 == j1) {
             do {
                 i1 = j1;
+                if (j1 == l1) break;
                 U8_NEXT(s1, j1, l1, ch);
                 // We can't do any thing if we occurred invalid utf-8 char.
                 // In this case, j will increment by 1, so just break
@@ -90,31 +93,68 @@ int svcasecmp_fix(std::string_view sv1, std::string_view sv2) {
                     LOGW("invalid char at %zu-%zu : %s", i1, j1, escape_string(sv1).c_str());
                     break;
                 }
-            } while (j1 < l1 && u_hasBinaryProperty(ch, UCHAR_DEFAULT_IGNORABLE_CODE_POINT));
+            } while (u_hasBinaryProperty(ch, UCHAR_DEFAULT_IGNORABLE_CODE_POINT));
         }
 
         if (i2 == j2) {
             do {
                 i2 = j2;
+                if (j2 == l2) break;
                 U8_NEXT(s2, j2, l2, ch);
                 if (ch < 0) [[unlikely]] {
                     LOGW("invalid char at %zu-%zu : %s", i2, j2, escape_string(sv2).c_str());
                     break;
                 }
-            } while (j2 < l2 && u_hasBinaryProperty(ch, UCHAR_DEFAULT_IGNORABLE_CODE_POINT));
+            } while (u_hasBinaryProperty(ch, UCHAR_DEFAULT_IGNORABLE_CODE_POINT));
         }
 
         if (cm[s1[i1]] != cm[s2[i2]]) {
             break;
         }
-        if (cm[s1[i1]] == '\0') {
-            return 0;
-        }
         ++i1;
         ++i2;
     }
+    if (i1 < l1 && i1 == j1) {
+        do {
+            i1 = j1;
+            if (j1 == l1) break;
+            U8_NEXT(s1, j1, l1, ch);
+            // We can't do any thing if we occurred invalid utf-8 char.
+            // In this case, j will increment by 1, so just break
+            if (ch < 0) [[unlikely]] {
+                LOGW("invalid char at %zu-%zu : %s", i1, j1, escape_string(sv1).c_str());
+                break;
+            }
+        } while (u_hasBinaryProperty(ch, UCHAR_DEFAULT_IGNORABLE_CODE_POINT));
+    }
 
-    return ((u_char) cm[s1[i1]] - (u_char) cm[s2[i2]]);
+    if (i2 < l2 && i2 == j2) {
+        do {
+            i2 = j2;
+            if (j2 == l2) break;
+            U8_NEXT(s2, j2, l2, ch);
+            if (ch < 0) [[unlikely]] {
+                LOGW("invalid char at %zu-%zu : %s", i2, j2, escape_string(sv2).c_str());
+                break;
+            }
+        } while (u_hasBinaryProperty(ch, UCHAR_DEFAULT_IGNORABLE_CODE_POINT));
+    }
+
+    int ret = ((u_char) cm[s1[i1]] - (u_char) cm[s2[i2]]);
+#ifndef NDEBUG
+    {
+        std::string ss1{sv1}, ss2{sv2};
+        remove_default_ignorable_code_point(ss1);
+        remove_default_ignorable_code_point(ss2);
+        int ret2 = strcasecmp(ss1.c_str(), ss2.c_str());
+        if (ret2 != ret) {
+            LOGE("!!! strcasecmp implementation error: compare %s : %s, ret = %d, real ret=%d",
+                 escape_string(sv1).c_str(), escape_string(sv2).c_str(), ret, ret2);
+            return ret2;
+        }
+    };
+#endif
+    return ret;
 }
 
 int strcasecmp_fix(const char *s1, const char *s2) {
