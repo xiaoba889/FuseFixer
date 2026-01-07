@@ -16,7 +16,9 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.os.Binder;
+import android.os.Build;
 import android.os.Bundle;
+import android.system.Os;
 import android.util.Log;
 import android.view.View;
 import android.widget.LinearLayout;
@@ -43,18 +45,47 @@ public class MainActivity extends AppCompatActivity {
     int mInjectedPid = -1;
     private WeakReference<Binder> mWeakRef;
 
-    private TextView injectStatusTextView;
+    private TextView mInjectStatusTextView;
+    private Thread mPollingThread;
+    private boolean mPollStopped = false;
+    private boolean mChecking;
+    private TextView mInfoTextView;
+    private LinearLayout mRootView;
+
+    @SuppressLint("PrivateApi")
+    private static String getProp(String k) {
+        try {
+            var pc = Class.forName("android.os.SystemProperties");
+            var m = pc.getDeclaredMethod("get", String.class);
+            return (String) m.invoke(null, k);
+        } catch (Throwable t) {
+            Log.e(TAG, "getProp", t);
+        }
+        return null;
+    }
+
+    @SuppressLint("PrivateApi")
+    private static boolean getBoolProp(String k) {
+        try {
+            var pc = Class.forName("android.os.SystemProperties");
+            var m = pc.getDeclaredMethod("getBoolean", String.class, boolean.class);
+            return (boolean) m.invoke(null, k, false);
+        } catch (Throwable t) {
+            Log.e(TAG, "getProp", t);
+        }
+        return false;
+    }
 
     @Override
     protected void onCreate(@Nullable Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         EdgeToEdge.enable(this);
         var scrollRoot = new ScrollView(this);
-        var rootView = new LinearLayout(this);
-        scrollRoot.addView(rootView);
-        rootView.setOrientation(LinearLayout.VERTICAL);
+        mRootView = new LinearLayout(this);
+        scrollRoot.addView(mRootView);
+        mRootView.setOrientation(LinearLayout.VERTICAL);
         setContentView(scrollRoot);
-        ViewCompat.setOnApplyWindowInsetsListener(rootView, new OnApplyWindowInsetsListener() {
+        ViewCompat.setOnApplyWindowInsetsListener(mRootView, new OnApplyWindowInsetsListener() {
             @Override
             public @NonNull WindowInsetsCompat onApplyWindowInsets(@NonNull View v, @NonNull WindowInsetsCompat insets) {
                 var systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars());
@@ -63,9 +94,39 @@ public class MainActivity extends AppCompatActivity {
             }
         });
 
-        injectStatusTextView = new TextView(this);
-        rootView.addView(injectStatusTextView);
+        setupInfo();
+        setupStatus();
+    }
+
+    private void setupInfo() {
+        mInfoTextView = new TextView(this);
+        mRootView.addView(mInfoTextView);
+        mInfoTextView.setTextIsSelectable(true);
+        mInfoTextView.append("FuseFixer ver " + BuildConfig.VERSION_CODE + " (" + BuildConfig.VERSION_NAME + ")\n");
+
+        var uname = Os.uname();
+        mInfoTextView.append("Kernel: " + uname.release + "\n");
+        mInfoTextView.append("Android: " + Build.VERSION.RELEASE + "\n");
+        mInfoTextView.append("SDK: " + Build.VERSION.SDK_INT_FULL + "\n");
+
+        var fuseBpf = getBoolProp("ro.fuse.bpf.is_running");
+        mInfoTextView.append("fuse bpf: " + (fuseBpf ? "supported" : "unsupported") + "\n");
+        var appDataIsolation = getBoolProp("persist.sys.vold_app_data_isolation_enabled");
+        mInfoTextView.append("AppDataIsolation: " + (appDataIsolation ? "enabled" : "disabled") + "\n");
+        if (!fuseBpf && !appDataIsolation) {
+            mInfoTextView.append("App data isolation is required to fix Android/data access.\n");
+            mInfoTextView.append("Use `setprop persist.sys.vold_app_data_isolation_enabled 1` to enable it.\n");
+        }
+    }
+
+    private void setupStatus() {
+        mInjectStatusTextView = new TextView(this);
+        mRootView.addView(mInjectStatusTextView);
         updateStatus();
+
+        mInjectStatusTextView.setOnClickListener(v -> {
+            checkModule();
+        });
 
         mReceiver = new BroadcastReceiver() {
             @Override
@@ -79,6 +140,10 @@ public class MainActivity extends AppCompatActivity {
                     if (PKG_MEDIA_PROVIDERS.equals(pkg) || PKG_MEDIA_PROVIDERS_GOOGLE.equals(pkg)) {
                         mInjectedPkg = pkg;
                         mInjectedPid = intent.getIntExtra(EXTRA_PID, -1);
+                        if (mPollingThread != null) {
+                            mPollingThread.interrupt();
+                            mPollStopped = true;
+                        }
                         updateStatus();
                     }
                 } catch (Throwable e) {
@@ -86,6 +151,18 @@ public class MainActivity extends AppCompatActivity {
                 }
             }
         };
+        Utils.registerExportedReceiver(this, mReceiver, new IntentFilter(ACTION_SET_STATUS));
+
+        checkModule();
+    }
+
+    private void checkModule() {
+        if (mChecking) return;
+        mInjectedPkg = null;
+        mInjectedPid = -1;
+        mPollStopped = false;
+        updateStatus();
+        mChecking = true;
 
         var binder = new Binder();
         var refq = new ReferenceQueue<Binder>();
@@ -99,49 +176,38 @@ public class MainActivity extends AppCompatActivity {
         myIntent.setPackage(PKG_MEDIA_PROVIDERS);
         sendBroadcast(myIntent);
         // TODO: hook JavaBinder's destructor
-        new Thread(() -> {
+        mPollingThread = new Thread(() -> {
             try {
+                Thread.sleep(2000);
+                Runtime.getRuntime().gc();
                 Log.d(TAG, "polling ref ...");
                 var r = refq.remove();
                 Log.d(TAG, "polled = " + r);
                 mWeakRef = null;
+                runOnUiThread(() -> {
+                    mPollStopped = true;
+                    updateStatus();
+                });
             } catch (InterruptedException e) {
-                throw new RuntimeException(e);
+                Log.d(TAG, "return");
             }
-        }).start();
-        /*
-        new Thread(() -> {
-            while (true) {
-                var r = mWeakRef;
-                if (r == null) {
-                    Log.d(TAG, "mWeakRef is null");
-                    break;
-                }
-                if (r.get() == null) {
-                    mWeakRef = null;
-                    Log.d(TAG, "mWeakRef.get() is null");
-                    break;
-                } else {
-                    Log.d(TAG, "still alive");
-                }
-                try {
-                    Thread.sleep(1000);
-                } catch (InterruptedException e) {
-                    throw new RuntimeException(e);
-                }
-            }
-        }).start();*/
-
-        Utils.registerExportedReceiver(this, mReceiver, new IntentFilter(ACTION_SET_STATUS));
+        });
+        mPollingThread.start();
     }
 
 
     @SuppressLint("SetTextI18n")
     private void updateStatus() {
+        mChecking = false;
+        mPollingThread = null;
         if (mInjectedPkg == null) {
-            injectStatusTextView.setText("inject status: querying ...");
+            if (mPollStopped) {
+                mInjectStatusTextView.setText("Module status: not hooked (touch to recheck)\n");
+            } else {
+                mInjectStatusTextView.setText("Module status: checking ...\n");
+            }
         } else {
-            injectStatusTextView.setText("inject status: injected " + mInjectedPkg + " pid=" + mInjectedPid);
+            mInjectStatusTextView.setText("Module status: hooked " + mInjectedPkg + " pid=" + mInjectedPid + "\n");
         }
     }
 
@@ -149,5 +215,8 @@ public class MainActivity extends AppCompatActivity {
     protected void onDestroy() {
         super.onDestroy();
         unregisterReceiver(mReceiver);
+        if (mPollingThread != null) {
+            mPollingThread.interrupt();
+        }
     }
 }

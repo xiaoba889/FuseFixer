@@ -33,8 +33,8 @@ android {
         applicationId = "io.github.a13e300.fusefixer"
         minSdk = 31
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = gitCommitCount
+        versionName = gitCommitHash
 
         externalNativeBuild {
             cmake {
