@@ -10,6 +10,7 @@ import static io.github.a13e300.fusefixer.Constants.PKG_MEDIA_PROVIDERS_GOOGLE;
 import static io.github.a13e300.fusefixer.Constants.TAG;
 
 import android.annotation.SuppressLint;
+import android.app.Activity;
 import android.app.PendingIntent;
 import android.content.BroadcastReceiver;
 import android.content.Context;
@@ -31,11 +32,10 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
-import androidx.activity.EdgeToEdge;
 import androidx.annotation.Nullable;
-import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.view.OnApplyWindowInsetsListener;
 import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowCompat;
 import androidx.core.view.WindowInsetsCompat;
 
 import org.jspecify.annotations.NonNull;
@@ -46,7 +46,7 @@ import java.lang.ref.WeakReference;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-public class MainActivity extends AppCompatActivity {
+public class MainActivity extends Activity {
 
     BroadcastReceiver mReceiver;
 
@@ -88,7 +88,7 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onCreate(@Nullable Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        EdgeToEdge.enable(this);
+        WindowCompat.enableEdgeToEdge(getWindow());
         var scrollRoot = new ScrollView(this);
         mRootView = new LinearLayout(this);
         scrollRoot.addView(mRootView);

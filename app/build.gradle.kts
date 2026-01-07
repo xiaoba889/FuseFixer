@@ -1,3 +1,4 @@
+import com.android.build.gradle.tasks.PackageAndroidArtifact
 import java.nio.charset.StandardCharsets
 
 plugins {
@@ -77,10 +78,23 @@ android {
             version = "3.22.1"
         }
     }
+
+    packaging {
+        resources.excludes += "**"
+    }
+
+    // https://stackoverflow.com/a/77745844
+    tasks.withType<PackageAndroidArtifact> {
+        doFirst { appMetadata.asFile.orNull?.writeText("") }
+    }
+
+    dependenciesInfo {
+        includeInApk = false
+        includeInBundle = false
+    }
 }
 
 dependencies {
     compileOnly(libs.xposed.api)
     implementation(libs.androidx.core)
-    implementation(libs.androidx.appcompat)
 }
