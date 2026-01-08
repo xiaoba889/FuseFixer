@@ -302,8 +302,8 @@ void my_pf_lookup(fuse_req_t req, uint64_t parent, const char* name) {
 int (*old_fuse_reply_entry)(fuse_req_t req, const struct fuse_entry_param* e);
 int my_fuse_reply_entry(fuse_req_t req, const struct fuse_entry_param* e) {
     auto ret = old_fuse_reply_entry(req, e);
-    LOGI("fuse_reply_entry: req=%lu ino=%s timeout=%.2le attr_timeout=%.2le ret=%d", req->unique,
-         escape_string(inodePath(e->ino)).c_str(), e->entry_timeout, e->attr_timeout, ret);
+    LOGI("fuse_reply_entry: req=%lu ino=%s timeout=%.2le attr_timeout=%.2le bpf_fd=%lu bpf_action=%lu backing_action=%lu backing_fd=%lu ret=%d", req->unique,
+         escape_string(inodePath(e->ino)).c_str(), e->entry_timeout, e->attr_timeout, e->bpf_fd, e->bpf_action, e->backing_action, e->backing_fd, ret);
     return ret;
 }
 
