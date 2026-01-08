@@ -319,19 +319,22 @@ void on_library_loaded(const char *name, void *handle) {
     if (std::string(name).ends_with(kLibFuseJni)) {
         LOGI("hooking libfuse_jni");
         uintptr_t base_addr = 0;
+        size_t load_sz = 0;
         auto callback = [&](dl_phdr_info& info) -> bool {
             if (!info.dlpi_name) return false;
             std::string_view name{info.dlpi_name};
             if (!name.ends_with(kLibFuseJni)) return false;
             if (!info.dlpi_phdr) return false;
             auto phdrs = info.dlpi_phdr;
-            uintptr_t vaddr_min = UINTPTR_MAX;
+            uintptr_t vaddr_min = UINTPTR_MAX, vaddr_max = 0;
             for (auto i = 0; i < info.dlpi_phnum; i++) {
                 auto &phdr = phdrs[i];
                 if (phdr.p_type == PT_LOAD) {
                     if (vaddr_min > phdr.p_vaddr) vaddr_min = phdr.p_vaddr;
+                    if (vaddr_max < phdr.p_vaddr) vaddr_max = phdr.p_vaddr;
                 }
             }
+            load_sz = vaddr_max - vaddr_min;
             base_addr = info.dlpi_addr + vaddr_min;
             return true;
         };
@@ -340,15 +343,24 @@ void on_library_loaded(const char *name, void *handle) {
             return reinterpret_cast<Callback*>(data)->operator()(*info) ? 1 : 0;
         }, &callback);
 
-        LOGD("base %p", (void*) base_addr);
+        LOGD("base %p load sz %zu", (void*) base_addr, load_sz);
 
         size_t off;
         std::string path{};
+
+        uintptr_t exec_addr = 0, exec_sz = 0;
+        int exec_perm = 0;
 
         maps_scan::MapInfo::ForEach([&](const maps_scan::MapInfo& info) -> bool {
             if (info.start == base_addr) {
                 off = info.offset;
                 path = info.path;
+            }
+            if (info.start >= base_addr && info.end < base_addr + load_sz && info.path == path && (info.perms & PROT_EXEC) != 0) {
+                exec_addr = info.start;
+                exec_perm = info.perms;
+                exec_sz = info.end - info.start;
+                // meet executable, we can return
                 return false;
             }
             return true;
@@ -359,7 +371,15 @@ void on_library_loaded(const char *name, void *handle) {
             return;
         }
 
-        LOGD("so path %s off %zu", path.c_str(), off);
+        LOGD("so path %s off %zu exec addr %p sz %zu", path.c_str(), off, (void*) exec_addr, exec_sz);
+
+        // make executable area rwx to prevent their vma from splitting
+        // this fixes unwind
+        if (exec_addr) {
+            if (mprotect((void *) exec_addr, exec_sz, exec_perm | PROT_WRITE)) {
+                PLOGE("fix memory perm");
+            }
+        }
 
         {
             elf_parser::Elf elf{};
@@ -425,6 +445,12 @@ void on_library_loaded(const char *name, void *handle) {
             }
         }
 
+        if (exec_addr) {
+            if (mprotect((void *) exec_addr, exec_sz, exec_perm)) {
+                PLOGE("fix memory perm back");
+            }
+        }
+
         {
             elf_parser::Elf elf{};
             if (!elf.InitFromMemory((void*) base_addr, true)) {
@@ -438,17 +464,20 @@ void on_library_loaded(const char *name, void *handle) {
 #define PAGE_START(x) ((char*) ((x) & ~mask))
 #define PAGE_END(x) PAGE_START(x + mask)
 
-            auto do_hook_plt = [&](const char* sym, void* hook, void** old) {
+            auto do_hook_plt = [&](const char* show_name, const char* sym, void* hook, void** old, const char* alt = nullptr) {
                 auto addrs = elf.FindPltAddr(sym);
+                if (addrs.empty() && alt) {
+                    addrs = elf.FindPltAddr(alt);
+                }
                 if (addrs.empty()) {
-                    LOGE("no %s found", sym);
+                    LOGE("no %s found", show_name);
                 }
                 for (auto a: addrs) {
-                    LOGD("hooking %s %p", sym, (void*)a);
-                    if (mprotect(PAGE_START(a), pgsz, PROT_READ|PROT_WRITE) < 0) {
+                    LOGD("hooking %s %p", show_name, (void*)a);
+                    if (mprotect(PAGE_START(a), pgsz, PROT_READ | PROT_WRITE) < 0) {
                         PLOGE("mprotect");
                     } else {
-                        LOGD("hooked %s %p", sym, (void*) a);
+                        LOGD("hooked %s %p", show_name, (void*) a);
                         *old = *(void**) a;
                         *(void**)a = hook;
                         __builtin___clear_cache(PAGE_START(a), PAGE_END(a));
@@ -456,18 +485,18 @@ void on_library_loaded(const char *name, void *handle) {
                 }
             };
 
-            do_hook_plt("strcasecmp", (void*) my_strcasecmp, (void**) &old_strcasecmp);
-            do_hook_plt("_ZN7android4base16EqualsIgnoreCaseENSt6__ndk117basic_string_viewIcNS1_11char_traitsIcEEEES5_",
-                        (void*) my_EqualsIgnoreCase, (void**) &old_EqualsIgnoreCase);
+            do_hook_plt("strcasecmp", "strcasecmp", (void*) my_strcasecmp, (void**) &old_strcasecmp);
+            do_hook_plt("EqualsIgnoreCase", "_ZN7android4base16EqualsIgnoreCaseENSt6__ndk117basic_string_viewIcNS1_11char_traitsIcEEEES5_",
+                        (void*) my_EqualsIgnoreCase, (void**) &old_EqualsIgnoreCase, "_ZN7android4base16EqualsIgnoreCaseENSt3__117basic_string_viewIcNS1_11char_traitsIcEEEES5_");
 
             if constexpr (kDebugFuse) {
-                do_hook_plt("fuse_lowlevel_notify_inval_entry",
+                do_hook_plt("fuse_lowlevel_notify_inval_entry", "fuse_lowlevel_notify_inval_entry",
                             (void *) my_fuse_lowlevel_notify_inval_entry,
                             (void **) &old_fuse_lowlevel_notify_inval_entry);
-                do_hook_plt("fuse_lowlevel_notify_inval_inode",
+                do_hook_plt("fuse_lowlevel_notify_inval_inode", "fuse_lowlevel_notify_inval_inode",
                             (void *) my_fuse_lowlevel_notify_inval_inode,
                             (void **) &old_fuse_lowlevel_notify_inval_inode);
-                do_hook_plt("fuse_reply_entry",
+                do_hook_plt("fuse_reply_entry", "fuse_reply_entry",
                             (void *) my_fuse_reply_entry, (void **) &old_fuse_reply_entry);
             }
         }
