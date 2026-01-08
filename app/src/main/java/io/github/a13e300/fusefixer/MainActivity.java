@@ -18,6 +18,7 @@ import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.graphics.Typeface;
 import android.os.Binder;
 import android.os.Build;
 import android.os.Bundle;
@@ -45,6 +46,7 @@ import org.jspecify.annotations.NonNull;
 import java.io.File;
 import java.lang.ref.ReferenceQueue;
 import java.lang.ref.WeakReference;
+import java.nio.charset.StandardCharsets;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -114,6 +116,7 @@ public class MainActivity extends Activity {
         mInfoTextView = new TextView(this);
         mRootView.addView(mInfoTextView);
         mInfoTextView.setTextIsSelectable(true);
+        mInfoTextView.setTypeface(Typeface.MONOSPACE);
         mInfoTextView.append("FuseFixer ver " + BuildConfig.VERSION_CODE + " (" + BuildConfig.VERSION_NAME + ")\n");
 
         var uname = Os.uname();
@@ -137,6 +140,7 @@ public class MainActivity extends Activity {
     private void setupStatus() {
         mInjectStatusTextView = new TextView(this);
         mRootView.addView(mInjectStatusTextView);
+        mInjectStatusTextView.setTypeface(Typeface.MONOSPACE);
         updateStatus();
 
         mInjectStatusTextView.setOnClickListener(v -> {
@@ -226,7 +230,7 @@ public class MainActivity extends Activity {
         }
     }
 
-    private static Pattern UNICODE_PATTERN = Pattern.compile("\\\\u([0-9a-fA-F]{4})");
+    private final static Pattern UNICODE_PATTERN = Pattern.compile("\\\\u([0-9a-fA-F]{4})");
 
     private static String unescape(String s) {
         if (s == null) return null;
@@ -263,7 +267,7 @@ public class MainActivity extends Activity {
 
         var gv = new GridLayout(this);
         mRootView.addView(gv);
-        gv.setRowCount(2);
+        gv.setRowCount(3);
         gv.setColumnCount(4);
 
         var statButton = new Button(this);
@@ -281,6 +285,10 @@ public class MainActivity extends Activity {
         var openButton = new Button(this);
         openButton.setText("Open");
         gv.addView(openButton);
+
+        var getConButton = new Button(this);
+        getConButton.setText("Get Con");
+        gv.addView(getConButton);
 
         var insertZwjButton = new Button(this);
         insertZwjButton.setText("Insert ZWJ");
@@ -301,12 +309,14 @@ public class MainActivity extends Activity {
         var outputTextView = new TextView(this);
         mRootView.addView(outputTextView);
         outputTextView.setTextIsSelectable(true);
+        outputTextView.setTypeface(Typeface.MONOSPACE);
 
         statButton.setOnClickListener(v -> {
             var p = unescape(pathEditText.getText().toString());
-            var result = "OK";
+            String result;
             try {
-                Os.stat(p);
+                var stat = Os.stat(p);
+                result = "OK\n" + Utils.statToString(stat);
             } catch (ErrnoException e) {
                 result = OsConstants.errnoName(e.errno);
             }
@@ -363,6 +373,21 @@ public class MainActivity extends Activity {
                 result = OsConstants.errnoName(e.errno);
             }
             outputTextView.append("Open ");
+            outputTextView.append(escape(p));
+            outputTextView.append(" -> ");
+            outputTextView.append(result);
+            outputTextView.append("\n");
+        });
+
+        getConButton.setOnClickListener(v -> {
+            var p = unescape(pathEditText.getText().toString());
+            String result;
+            try {
+                result = "OK\n" + new String(Os.getxattr(p, "security.selinux"), StandardCharsets.UTF_8);
+            } catch (ErrnoException e) {
+                result = OsConstants.errnoName(e.errno);
+            }
+            outputTextView.append("GetCon ");
             outputTextView.append(escape(p));
             outputTextView.append(" -> ");
             outputTextView.append(result);
