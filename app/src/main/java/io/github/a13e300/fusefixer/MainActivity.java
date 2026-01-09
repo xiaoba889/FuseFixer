@@ -306,6 +306,10 @@ public class MainActivity extends Activity {
         copyAllButton.setText("Copy All");
         gv.addView(copyAllButton);
 
+        var selfDataButton = new Button(this);
+        selfDataButton.setText("Self Data");
+        gv.addView(selfDataButton);
+
         var outputTextView = new TextView(this);
         mRootView.addView(outputTextView);
         outputTextView.setTextIsSelectable(true);
@@ -424,6 +428,11 @@ public class MainActivity extends Activity {
             texts.append("\nTest:\n");
             texts.append(outputTextView.getText());
             cm.setPrimaryClip(ClipData.newPlainText("", texts));
+        });
+
+        selfDataButton.setOnClickListener(v -> {
+            var f = getExternalFilesDir("");
+            outputTextView.append("external files dir: " + f + "\n");
         });
     }
 
