@@ -81,7 +81,7 @@ int svcasecmp_fix(std::string_view sv1, std::string_view sv2) {
     size_t i1 = 0, i2 = 0, j1 = 0, j2 = 0;
 
     UChar32 ch;
-    while (i1 < l1 && j2 < l2) {
+    while (i1 < l1 && i2 < l2) {
         if (i1 == j1) {
             do {
                 i1 = j1;
