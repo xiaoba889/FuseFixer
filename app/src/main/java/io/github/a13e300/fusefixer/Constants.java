@@ -1,7 +1,7 @@
 package io.github.a13e300.fusefixer;
 
 public class Constants {
-    public static final String TAG = "FuseFixer";
+    public static final String TAG = "LSPosedFuseFixer";
     public static final String ACTION_SET_STATUS = "io.github.a13e300.fusefixer.SET_STATUS";
     public static final String ACTION_GET_STATUS = "io.github.a13e300.fusefixer.GET_STATUS";
     public static final String EXTRA_PENDING_INTENT = "EXTRA_PENDING_INTENT";
