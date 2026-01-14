@@ -64,7 +64,7 @@ std::string escape_string(std::string_view sv) {
         if (i >= 32 && i < 127) [[likely]] {
             os += i;
         } else {
-            snprintf(buf, sizeof(buf), "\\x%02x", i);
+            snprintf(buf, sizeof(buf), "\\x%02x", (unsigned char) i);
             os += buf;
         }
     }
@@ -329,6 +329,17 @@ int my_fuse_reply_entry(fuse_req_t req, const struct fuse_entry_param* e) {
     return ret;
 }
 
+static void (*old_pf_lookup_postfilter)(fuse_req_t req, fuse_ino_t parent, uint32_t error_in,
+                                    const char* name, struct fuse_entry_out* feo,
+                                    struct fuse_entry_bpf_out* febo);
+
+static void my_pf_lookup_postfilter(fuse_req_t req, fuse_ino_t parent, uint32_t error_in,
+                                 const char* name, struct fuse_entry_out* feo,
+                                 struct fuse_entry_bpf_out* febo) {
+    LOGI("pf_lookup_postfilter parent=%s name=%s", escape_string(inodePath(parent)).c_str(), name);
+    old_pf_lookup_postfilter(req, parent, error_in, name, feo, febo);
+}
+
 #ifdef NDEBUG
 static constexpr bool kDebugFuse = false;
 #else
@@ -460,9 +471,18 @@ void on_library_loaded(const char *name, void *handle) {
                 LOGI("pf_lookup: %p", p);
                 r = hook_func(p, (void *) my_pf_lookup, (void **) &old_pf_lookup);
                 if (r != 0) {
-                    LOGE("hook is_bpf_backing_path failed: %d", r);
+                    LOGE("hook pf_lookup failed: %d", r);
                 } else {
                     LOGI("hook pf_lookup success");
+                }
+
+                p = elf.getSymbAddress("_ZN13mediaprovider4fuseL20pf_lookup_postfilterEP8fuse_reqmjPKcP14fuse_entry_outP18fuse_entry_bpf_out");
+                LOGI("pf_lookup_postfilter: %p", p);
+                r = hook_func(p, (void *) my_pf_lookup_postfilter, (void **) &old_pf_lookup_postfilter);
+                if (r != 0) {
+                    LOGE("hook pf_lookup_postfilter failed: %d", r);
+                } else {
+                    LOGI("hook pf_lookup_postfilter success");
                 }
             }
         }
