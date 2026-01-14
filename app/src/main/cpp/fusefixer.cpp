@@ -191,7 +191,7 @@ bool has_default_ignorable_code_point(const std::string& str) {
     UChar32 ch;
     while (i < len) {
         U8_NEXT(s, i, len, ch);
-        if (ch >= 0 && !is_default_ignorable_code_point(ch)) {
+        if (ch >= 0 && is_default_ignorable_code_point(ch)) {
             return true;
         }
     }
