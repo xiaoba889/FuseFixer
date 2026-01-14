@@ -310,6 +310,10 @@ public class MainActivity extends Activity {
         selfDataButton.setText("Self Data");
         gv.addView(selfDataButton);
 
+        var checkAllPkgButton = new Button(this);
+        checkAllPkgButton.setText("All PKG");
+        gv.addView(checkAllPkgButton);
+
         var outputTextView = new TextView(this);
         mRootView.addView(outputTextView);
         outputTextView.setTextIsSelectable(true);
@@ -433,6 +437,41 @@ public class MainActivity extends Activity {
         selfDataButton.setOnClickListener(v -> {
             var f = getExternalFilesDir("");
             outputTextView.append("external files dir: " + f + "\n");
+        });
+
+        checkAllPkgButton.setOnClickListener(v -> {
+            new Thread(() -> {
+                var sb = new StringBuilder();
+                try {
+                    var pkgs = getPackageManager().getInstalledApplications(0);
+                    if (pkgs.size() <= 1) {
+                        sb.append("Could not get app list, please grant app list permission\n");
+                    } else {
+                        var appDataPath = "/storage/emulated/" + (Process.myUid() / 100000) + "/Android/\u200ddata/";
+                        var existCount = 0;
+                        var existPkgs = new StringBuilder();
+                        for (var pkg : pkgs) {
+                            try {
+                                Os.stat(appDataPath + pkg.packageName);
+                                existCount++;
+                                existPkgs.append(pkg.packageName);
+                                existPkgs.append("\n");
+                            } catch (ErrnoException ignored) {
+                            }
+                        }
+                        sb.append(existCount).append("/").append(pkgs.size()).append(" detected\n");
+                        sb.append(existPkgs);
+                        Log.d(TAG, "success " + existCount + "/" + pkgs.size());
+                    }
+                } catch (Throwable t) {
+                    Log.e(TAG, "check all pkg", t);
+                    sb.append(Log.getStackTraceString(t));
+                }
+                Log.d(TAG, "check all pkg: " + sb);
+                runOnUiThread(() -> {
+                    outputTextView.append(sb);
+                });
+            }).start();
         });
     }
 

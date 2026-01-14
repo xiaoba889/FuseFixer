@@ -23,6 +23,8 @@ import android.os.Process;
 import android.util.Log;
 
 import de.robv.android.xposed.IXposedHookLoadPackage;
+import de.robv.android.xposed.XC_MethodHook;
+import de.robv.android.xposed.XposedHelpers;
 import de.robv.android.xposed.callbacks.XC_LoadPackage;
 
 public class Entry implements IXposedHookLoadPackage {
@@ -71,6 +73,14 @@ public class Entry implements IXposedHookLoadPackage {
                     }
                 } catch (Throwable t) {
                     Log.e(TAG, "register", t);
+                }
+            });
+
+            XposedHelpers.findAndHookMethod("com.android.providers.media.MediaProvider", lpparam.classLoader, "isUidAllowedAccessToDataOrObbPathForFuse", int.class, "java.lang.String", new XC_MethodHook() {
+                
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                    Log.d(TAG, "isUidAllowedAccessToDataOrObbPathForFuse uid=" + param.args[0] + " path=" + param.args[1] + " result=" + param.getResult());
                 }
             });
 
