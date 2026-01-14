@@ -174,7 +174,7 @@ int svcasecmp_fix(std::string_view sv1, std::string_view sv2) {
                  escape_string(sv1).c_str(), escape_string(sv2).c_str(), ret, ret2);
             return ret2;
         }
-    };
+    }
 #endif
     return ret;
 }
@@ -241,7 +241,7 @@ bool my_is_app_accessible_path(struct fuse* fuse, const std::string& path, uid_t
         LOGD("fix is_app_accessible_path: %s uid=%d res=%d", escape_string(path).c_str(), uid, r);
         return r;
     }
-    return old_is_app_accessible_path(fuse, path, uid);;
+    return old_is_app_accessible_path(fuse, path, uid);
 }
 
 // Magic is here?
@@ -279,7 +279,7 @@ int (*old_fuse_lowlevel_notify_inval_entry)(void *se, uint64_t parent,
 int my_fuse_lowlevel_notify_inval_entry(void *se, uint64_t parent,
                                      const char *name, size_t namelen) {
     auto ret = old_fuse_lowlevel_notify_inval_entry(se, parent, name, namelen);
-    LOGI("notify_inval_entry: ino=0x%lx name=%s ret=%d", parent, name, ret);
+    LOGI("notify_inval_entry: ino=0x%lx name=%s ret=%d", (unsigned long) parent, name, ret);
     return ret;
 }
 
@@ -295,7 +295,7 @@ int my_fuse_lowlevel_notify_inval_inode(void *se, uint64_t ino,
     } else {
         name = reinterpret_cast<std::string*>(ino);
     }
-    LOGI("notify_inval_inode: ino=0x%lx name=%s ret=%d", ino, escape_string(*name).c_str(), ret);
+    LOGI("notify_inval_inode: ino=0x%lx name=%s ret=%d", (unsigned long) ino, escape_string(*name).c_str(), ret);
     return ret;
 }
 
@@ -307,7 +307,7 @@ std::string inodePath(uint64_t ino) {
         return "(ROOT)";
     }
     char buf[64];
-    snprintf(buf, sizeof(buf), "(%p)", ino);
+    snprintf(buf, sizeof(buf), "(%p)", (void*) ino);
     if (node_BuildPath_ptr) [[likely]] {
         return buf + node_BuildPath_ptr(reinterpret_cast<void*>(ino));
     } else {
@@ -317,15 +317,15 @@ std::string inodePath(uint64_t ino) {
 
 void (*old_pf_lookup)(fuse_req_t req, uint64_t parent, const char* name);
 void my_pf_lookup(fuse_req_t req, uint64_t parent, const char* name) {
-    LOGI("lookup: req=%lu parent=%s name=%s", req->unique, escape_string(inodePath(parent)).c_str(), escape_string(name).c_str());
+    LOGI("lookup: req=%lu parent=%s name=%s", (unsigned long) req->unique, escape_string(inodePath(parent)).c_str(), escape_string(name).c_str());
     old_pf_lookup(req, parent, name);
 }
 
 int (*old_fuse_reply_entry)(fuse_req_t req, const struct fuse_entry_param* e);
 int my_fuse_reply_entry(fuse_req_t req, const struct fuse_entry_param* e) {
     auto ret = old_fuse_reply_entry(req, e);
-    LOGI("fuse_reply_entry: req=%lu ino=%s timeout=%.2le attr_timeout=%.2le bpf_fd=%lu bpf_action=%lu backing_action=%lu backing_fd=%lu ret=%d", req->unique,
-         escape_string(inodePath(e->ino)).c_str(), e->entry_timeout, e->attr_timeout, e->bpf_fd, e->bpf_action, e->backing_action, e->backing_fd, ret);
+    LOGI("fuse_reply_entry: req=%lu ino=%s timeout=%.2le attr_timeout=%.2le bpf_fd=%lu bpf_action=%lu backing_action=%lu backing_fd=%lu ret=%d", (unsigned long) req->unique,
+         escape_string(inodePath(e->ino)).c_str(), e->entry_timeout, e->attr_timeout, (unsigned long) e->bpf_fd, (unsigned long) e->bpf_action, (unsigned long) e->backing_action, (unsigned long) e->backing_fd, ret);
     return ret;
 }
 
