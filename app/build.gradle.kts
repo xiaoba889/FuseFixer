@@ -41,7 +41,7 @@ android {
 
     defaultConfig {
         applicationId = "io.github.a13e300.fusefixer"
-        minSdk = 31
+        minSdk = 30
         targetSdk = 36
         versionCode = gitCommitCount
         versionName = gitCommitHash

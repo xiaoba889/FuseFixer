@@ -2,7 +2,6 @@
 #include <string_view>
 
 #include <unicode/utf8.h>
-#include <unicode/uchar.h>
 
 #include <link.h>
 #include <unistd.h>
@@ -72,6 +71,29 @@ std::string escape_string(std::string_view sv) {
     return os;
 }
 
+// https://cs.android.com/android/kernel/superproject/+/common-android-mainline:common/fs/unicode/mkutf8data.c;l=2233;drc=231825b2e1ff6ba799c5eaf396d3ab2354e37c6b
+// https://www.unicode.org/Public/12.1.0/ucd/DerivedCoreProperties.txt
+// Default_Ignorable_Code_Point
+inline bool is_default_ignorable_code_point(UChar32 ch) {
+    return  ch == 0x00AD ||
+            ch == 0x034F ||
+            ch == 0x061C ||
+            (0x115F <= ch && ch <= 0x1160) ||
+            (0x17B4 <= ch && ch <= 0x17B5) ||
+            (0x180B <= ch && ch <= 0x180E) ||
+            (0x200B <= ch && ch <= 0x200F) ||
+            (0x202A <= ch && ch <= 0x202E) ||
+            (0x2060 <= ch && ch <= 0x206F) ||
+            ch == 0x3164 ||
+            (0xFE00 <= ch && ch <= 0xFE0F) ||
+            ch == 0xFEFF ||
+            ch == 0xFFA0 ||
+            (0xFFF0 <= ch && ch <= 0xFFF8) ||
+            (0x1BCA0 <= ch && ch <= 0x1BCA3) ||
+            (0x1D173 <= ch && ch <= 0x1D17A) ||
+            (0xE0000 <= ch && ch <= 0xE0FFF);
+}
+
 void remove_default_ignorable_code_point(std::string& str);
 
 int svcasecmp_fix(std::string_view sv1, std::string_view sv2) {
@@ -93,7 +115,7 @@ int svcasecmp_fix(std::string_view sv1, std::string_view sv2) {
                     LOGW("invalid char at %zu-%zu : %s", i1, j1, escape_string(sv1).c_str());
                     break;
                 }
-            } while (u_hasBinaryProperty(ch, UCHAR_DEFAULT_IGNORABLE_CODE_POINT));
+            } while (is_default_ignorable_code_point(ch));
         }
 
         if (i2 == j2) {
@@ -105,7 +127,7 @@ int svcasecmp_fix(std::string_view sv1, std::string_view sv2) {
                     LOGW("invalid char at %zu-%zu : %s", i2, j2, escape_string(sv2).c_str());
                     break;
                 }
-            } while (u_hasBinaryProperty(ch, UCHAR_DEFAULT_IGNORABLE_CODE_POINT));
+            } while (is_default_ignorable_code_point(ch));
         }
 
         if (cm[s1[i1]] != cm[s2[i2]]) {
@@ -125,7 +147,7 @@ int svcasecmp_fix(std::string_view sv1, std::string_view sv2) {
                 LOGW("invalid char at %zu-%zu : %s", i1, j1, escape_string(sv1).c_str());
                 break;
             }
-        } while (u_hasBinaryProperty(ch, UCHAR_DEFAULT_IGNORABLE_CODE_POINT));
+        } while (is_default_ignorable_code_point(ch));
     }
 
     if (i2 < l2 && i2 == j2) {
@@ -137,7 +159,7 @@ int svcasecmp_fix(std::string_view sv1, std::string_view sv2) {
                 LOGW("invalid char at %zu-%zu : %s", i2, j2, escape_string(sv2).c_str());
                 break;
             }
-        } while (u_hasBinaryProperty(ch, UCHAR_DEFAULT_IGNORABLE_CODE_POINT));
+        } while (is_default_ignorable_code_point(ch));
     }
 
     int ret = ((u_char) cm[s1[i1]] - (u_char) cm[s2[i2]]);
@@ -169,7 +191,7 @@ bool has_default_ignorable_code_point(const std::string& str) {
     UChar32 ch;
     while (i < len) {
         U8_NEXT(s, i, len, ch);
-        if (ch >= 0 && !u_hasBinaryProperty(ch, UCHAR_DEFAULT_IGNORABLE_CODE_POINT)) {
+        if (ch >= 0 && !is_default_ignorable_code_point(ch)) {
             return true;
         }
     }
@@ -187,7 +209,7 @@ void remove_default_ignorable_code_point(std::string& str) {
         U8_NEXT(s, i, len, ch);
         if (ch < 0) {
             LOGW("invalid char at %zu-%zu : %s", prev, i, escape_string(str).c_str());
-        } else if (!u_hasBinaryProperty(ch, UCHAR_DEFAULT_IGNORABLE_CODE_POINT)) {
+        } else if (!is_default_ignorable_code_point(ch)) {
             while (prev < i) {
                 buf[j++] = (char) s[prev++];
             }
