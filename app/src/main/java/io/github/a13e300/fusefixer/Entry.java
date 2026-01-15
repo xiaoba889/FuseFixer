@@ -76,23 +76,15 @@ public class Entry implements IXposedHookLoadPackage {
                 }
             });
 
-            XposedHelpers.findAndHookMethod("com.android.providers.media.MediaProvider", lpparam.classLoader, "isUidAllowedAccessToDataOrObbPathForFuse", int.class, "java.lang.String", new XC_MethodHook() {
-                
-                @Override
-                protected void afterHookedMethod(MethodHookParam param) throws Throwable {
-                    Log.d(TAG, "isUidAllowedAccessToDataOrObbPathForFuse uid=" + param.args[0] + " path=" + param.args[1] + " result=" + param.getResult());
-                }
-            });
+            if (BuildConfig.DEBUG) {
+                XposedHelpers.findAndHookMethod("com.android.providers.media.MediaProvider", lpparam.classLoader, "isUidAllowedAccessToDataOrObbPathForFuse", int.class, "java.lang.String", new XC_MethodHook() {
 
-        /*
-        var clz = XposedHelpers.findClass("com.android.providers.media.fuse.FuseDaemon", lpparam.classLoader);
-        XposedBridge.hookAllConstructors(clz, new XC_MethodHook() {
-            @Override
-            protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
-                Log.d("FuseFixer", "force enable uncached mode");
-                param.args[5] = true;
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                        Log.d(TAG, "isUidAllowedAccessToDataOrObbPathForFuse uid=" + param.args[0] + " path=" + param.args[1] + " result=" + param.getResult());
+                    }
+                });
             }
-        });*/
         }
     }
 }
