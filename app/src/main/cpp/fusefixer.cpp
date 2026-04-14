@@ -14,6 +14,7 @@
 #include "logging.h"
 
 #include "fuse.h"
+#include <jni.h>
 
 // https://cs.android.com/android/platform/superproject/main/+/main:bionic/libc/upstream-openbsd/lib/libc/string/strcasecmp.c;l=35-88;drc=b364683ea65e24070c77f1673a8c155665eb894e
 
@@ -244,18 +245,23 @@ bool my_is_app_accessible_path(struct fuse* fuse, const std::string& path, uid_t
     return old_is_app_accessible_path(fuse, path, uid);
 }
 
+static thread_local bool current_is_bpf_backed_path = false;
+
 // Magic is here?
 // https://cs.android.com/android/platform/superproject/main/+/main:packages/providers/MediaProvider/jni/FuseDaemon.cpp;l=699-701;drc=61197364367c9e404c7da6900658f1b16c42d0da
 bool (*old_is_bpf_backing_path)(const std::string& path);
 bool my_is_bpf_backing_path(const std::string& path) {
+    bool res;
     if (has_default_ignorable_code_point(path)) [[unlikely]] {
         std::string new_path{path};
         remove_default_ignorable_code_point(new_path);
-        auto r = old_is_bpf_backing_path(new_path);
-        LOGD("fix is_bpf_backing_path: %s res=%d", escape_string(path).c_str(), r);
-        return r;
+        res = old_is_bpf_backing_path(new_path);
+        LOGD("fix is_bpf_backing_path: %s res=%d", escape_string(path).c_str(), res);
+    } else {
+        res = old_is_bpf_backing_path(path);
     }
-    return old_is_bpf_backing_path(path);
+    current_is_bpf_backed_path = res;
+    return res;
 }
 
 // hook strcasecmp to solve mount point passthrough
@@ -318,6 +324,7 @@ std::string inodePath(uint64_t ino) {
 void (*old_pf_lookup)(fuse_req_t req, uint64_t parent, const char* name);
 void my_pf_lookup(fuse_req_t req, uint64_t parent, const char* name) {
     LOGI("lookup: req=%lu parent=%s name=%s", (unsigned long) req->unique, escape_string(inodePath(parent)).c_str(), escape_string(name).c_str());
+    current_is_bpf_backed_path = false;
     old_pf_lookup(req, parent, name);
 }
 
@@ -329,6 +336,25 @@ int my_fuse_reply_entry(fuse_req_t req, const struct fuse_entry_param* e) {
     return ret;
 }
 
+static thread_local bool in_pf_lookup_postfilter = false;
+
+int (*old_fuse_reply_err)(fuse_req_t req, int err);
+int my_fuse_reply_err(fuse_req_t req, int err) {
+    if (in_pf_lookup_postfilter) {
+        LOGI("pf_lookup_postfilter fuse_reply_err req=%p %d", req, err);
+    }
+    return old_fuse_reply_err(req, err);
+}
+
+int (*old_fuse_reply_buf)(fuse_req_t req, const char *buf, size_t size);
+int my_fuse_reply_buf(fuse_req_t req, const char *buf, size_t size) {
+    if (in_pf_lookup_postfilter) {
+        LOGI("pf_lookup_postfilter fuse_reply_buf req=%p", req);
+    }
+    return old_fuse_reply_buf(req, buf, size);
+}
+
+
 static void (*old_pf_lookup_postfilter)(fuse_req_t req, fuse_ino_t parent, uint32_t error_in,
                                     const char* name, struct fuse_entry_out* feo,
                                     struct fuse_entry_bpf_out* febo);
@@ -336,8 +362,10 @@ static void (*old_pf_lookup_postfilter)(fuse_req_t req, fuse_ino_t parent, uint3
 static void my_pf_lookup_postfilter(fuse_req_t req, fuse_ino_t parent, uint32_t error_in,
                                  const char* name, struct fuse_entry_out* feo,
                                  struct fuse_entry_bpf_out* febo) {
-    LOGI("pf_lookup_postfilter parent=%s name=%s", escape_string(inodePath(parent)).c_str(), name);
+    LOGI("pf_lookup_postfilter req=%p parent=%s name=%s", req, escape_string(inodePath(parent)).c_str(), name);
+    in_pf_lookup_postfilter = true;
     old_pf_lookup_postfilter(req, parent, error_in, name, feo, febo);
+    in_pf_lookup_postfilter = false;
 }
 
 #ifdef NDEBUG
@@ -540,6 +568,10 @@ void on_library_loaded(const char *name, void *handle) {
                             (void **) &old_fuse_lowlevel_notify_inval_inode);
                 do_hook_plt("fuse_reply_entry", "fuse_reply_entry",
                             (void *) my_fuse_reply_entry, (void **) &old_fuse_reply_entry);
+                do_hook_plt("fuse_reply_buf", "fuse_reply_buf",
+                            (void *) my_fuse_reply_buf, (void **) &old_fuse_reply_buf);
+                do_hook_plt("fuse_reply_err", "fuse_reply_err",
+                            (void *) my_fuse_reply_err, (void **) &old_fuse_reply_err);
             }
         }
 
@@ -551,4 +583,32 @@ NativeOnModuleLoaded native_init(const NativeAPIEntries *entries) {
     LOGI("Loaded");
     hook_func = entries->hook_func;
     return on_library_loaded;
+}
+
+extern "C"
+JNIEXPORT jint JNICALL
+Java_io_github_a13e300_fusefixer_Utils_rmdir(JNIEnv *env, jclass clazz, jstring path) {
+    jint ret;
+    auto s = env->GetStringUTFChars(path, nullptr);
+    if (rmdir(s)) {
+        ret = errno;
+    } else {
+        ret = 0;
+    }
+    env->ReleaseStringUTFChars(path, s);
+    return ret;
+}
+
+extern "C"
+JNIEXPORT jint JNICALL
+Java_io_github_a13e300_fusefixer_Utils_unlink(JNIEnv *env, jclass clazz, jstring path) {
+    jint ret;
+    auto s = env->GetStringUTFChars(path, nullptr);
+    if (unlink(s)) {
+        ret = errno;
+    } else {
+        ret = 0;
+    }
+    env->ReleaseStringUTFChars(path, s);
+    return ret;
 }

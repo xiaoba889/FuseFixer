@@ -265,6 +265,9 @@ public class MainActivity extends Activity {
         var defaultPath = "/storage/emulated/" + (Process.myUid() / 100000) + "/Android/\\u200ddata";
         pathEditText.setText(defaultPath);
 
+        var pathEditText2 = new EditText(this);
+        mRootView.addView(pathEditText2);
+
         var gv = new GridLayout(this);
         mRootView.addView(gv);
         gv.setRowCount(3);
@@ -285,6 +288,26 @@ public class MainActivity extends Activity {
         var openButton = new Button(this);
         openButton.setText("Open");
         gv.addView(openButton);
+
+        var createButton = new Button(this);
+        createButton.setText("Create");
+        gv.addView(createButton);
+
+        var mkdirButton = new Button(this);
+        mkdirButton.setText("mkdir");
+        gv.addView(mkdirButton);
+
+        var moveButton = new Button(this);
+        moveButton.setText("move");
+        gv.addView(moveButton);
+
+        var rmdirButton = new Button(this);
+        rmdirButton.setText("rmdir");
+        gv.addView(rmdirButton);
+
+        var unlinkButton = new Button(this);
+        unlinkButton.setText("unlink");
+        gv.addView(unlinkButton);
 
         var getConButton = new Button(this);
         getConButton.setText("Get Con");
@@ -387,6 +410,91 @@ public class MainActivity extends Activity {
             outputTextView.append("\n");
         });
 
+        createButton.setOnClickListener(v -> {
+            var p = unescape(pathEditText.getText().toString());
+            String result = "OK";
+            try {
+                var fd = Os.open(p, OsConstants.O_WRONLY | OsConstants.O_CREAT | OsConstants.O_EXCL | OsConstants.O_CLOEXEC, 0777);
+                try {
+                    Os.close(fd);
+                } catch (Throwable t) {
+                    Log.e(TAG, "could not close??", t);
+                }
+            } catch (ErrnoException e) {
+                result = OsConstants.errnoName(e.errno);
+            }
+            outputTextView.append("Create ");
+            outputTextView.append(escape(p));
+            outputTextView.append(" -> ");
+            outputTextView.append(result);
+            outputTextView.append("\n");
+        });
+
+        mkdirButton.setOnClickListener(v -> {
+            var p = unescape(pathEditText.getText().toString());
+            String result = "OK";
+            try {
+                Os.mkdir(p, 0777);
+            } catch (ErrnoException e) {
+                result = OsConstants.errnoName(e.errno);
+            }
+            outputTextView.append("Mkdir ");
+            outputTextView.append(escape(p));
+            outputTextView.append(" -> ");
+            outputTextView.append(result);
+            outputTextView.append("\n");
+        });
+
+        moveButton.setOnClickListener(v -> {
+            var p = unescape(pathEditText.getText().toString());
+            var p2 = unescape(pathEditText2.getText().toString());
+            String result = "OK";
+            try {
+                Os.rename(p, p2);
+            } catch (ErrnoException e) {
+                result = OsConstants.errnoName(e.errno);
+            }
+            outputTextView.append("Move ");
+            outputTextView.append(escape(p));
+            outputTextView.append(" -> ");
+            outputTextView.append(escape(p2));
+            outputTextView.append(" -> ");
+            outputTextView.append(result);
+            outputTextView.append("\n");
+        });
+
+        rmdirButton.setOnClickListener(v -> {
+            var p = unescape(pathEditText.getText().toString());
+            int res = Utils.rmdir(p);
+            String result;
+            if (res == 0) {
+                result = "Ok";
+            } else {
+                result = OsConstants.errnoName(res);
+            }
+            outputTextView.append("Rmdir ");
+            outputTextView.append(escape(p));
+            outputTextView.append(" -> ");
+            outputTextView.append(result);
+            outputTextView.append("\n");
+        });
+
+        unlinkButton.setOnClickListener(v -> {
+            var p = unescape(pathEditText.getText().toString());
+            int res = Utils.unlink(p);
+            String result;
+            if (res == 0) {
+                result = "Ok";
+            } else {
+                result = OsConstants.errnoName(res);
+            }
+            outputTextView.append("Unlink ");
+            outputTextView.append(escape(p));
+            outputTextView.append(" -> ");
+            outputTextView.append(result);
+            outputTextView.append("\n");
+        });
+
         getConButton.setOnClickListener(v -> {
             var p = unescape(pathEditText.getText().toString());
             String result;
@@ -447,7 +555,10 @@ public class MainActivity extends Activity {
                     if (pkgs.size() <= 1) {
                         sb.append("Could not get app list, please grant app list permission\n");
                     } else {
-                        var appDataPath = "/storage/emulated/" + (Process.myUid() / 100000) + "/Android/\u200ddata/";
+                        var appDataPath = unescape(pathEditText.getText().toString()) + "/";
+                        sb.append("using appDataPath ");
+                        sb.append(escape(appDataPath));
+                        sb.append("\n");
                         var existCount = 0;
                         var existPkgs = new StringBuilder();
                         for (var pkg : pkgs) {

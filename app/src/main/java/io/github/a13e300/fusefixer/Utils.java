@@ -94,4 +94,12 @@ public class Utils {
 
         return sb.toString();
     }
+
+    public static native int rmdir(String path);
+
+    public static native int unlink(String path);
+
+    static {
+        System.loadLibrary("fusefixer");
+    }
 }
