@@ -245,8 +245,6 @@ bool my_is_app_accessible_path(struct fuse* fuse, const std::string& path, uid_t
     return old_is_app_accessible_path(fuse, path, uid);
 }
 
-static thread_local bool current_is_bpf_backed_path = false;
-
 // Magic is here?
 // https://cs.android.com/android/platform/superproject/main/+/main:packages/providers/MediaProvider/jni/FuseDaemon.cpp;l=699-701;drc=61197364367c9e404c7da6900658f1b16c42d0da
 bool (*old_is_bpf_backing_path)(const std::string& path);
@@ -260,7 +258,6 @@ bool my_is_bpf_backing_path(const std::string& path) {
     } else {
         res = old_is_bpf_backing_path(path);
     }
-    current_is_bpf_backed_path = res;
     return res;
 }
 
@@ -324,7 +321,6 @@ std::string inodePath(uint64_t ino) {
 void (*old_pf_lookup)(fuse_req_t req, uint64_t parent, const char* name);
 void my_pf_lookup(fuse_req_t req, uint64_t parent, const char* name) {
     LOGI("lookup: req=%lu parent=%s name=%s", (unsigned long) req->unique, escape_string(inodePath(parent)).c_str(), escape_string(name).c_str());
-    current_is_bpf_backed_path = false;
     old_pf_lookup(req, parent, name);
 }
 
